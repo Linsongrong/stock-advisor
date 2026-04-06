@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:39",
+  "data": {
+    "code": "601888",
+    "name": "中国中免",
+    "price": 68.92,
+    "prev_close": 70.0,
+    "open": 70.16,
+    "volume": 133506,
+    "change_amount": -1.08,
+    "change_pct": -1.54,
+    "updated_at": "20260403161420",
+    "source": "live"
+  }
+}

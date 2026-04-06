@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:53",
+  "data": {
+    "code": "002916",
+    "name": "深南电路",
+    "price": 212.78,
+    "prev_close": 219.0,
+    "open": 220.06,
+    "volume": 103330,
+    "change_amount": -6.22,
+    "change_pct": -2.84,
+    "updated_at": "20260403161439",
+    "source": "live"
+  }
+}

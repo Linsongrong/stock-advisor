@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:25",
+  "data": {
+    "code": "600132",
+    "name": "重庆啤酒",
+    "price": 57.26,
+    "prev_close": 57.99,
+    "open": 58.33,
+    "volume": 32474,
+    "change_amount": -0.73,
+    "change_pct": -1.26,
+    "updated_at": "20260403161500",
+    "source": "live"
+  }
+}

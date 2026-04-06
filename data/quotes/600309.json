@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:20",
+  "data": {
+    "code": "600309",
+    "name": "万华化学",
+    "price": 82.38,
+    "prev_close": 82.71,
+    "open": 83.3,
+    "volume": 249403,
+    "change_amount": -0.33,
+    "change_pct": -0.4,
+    "updated_at": "20260403161401",
+    "source": "live"
+  }
+}

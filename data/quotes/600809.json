@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:26",
+  "data": {
+    "code": "600809",
+    "name": "山西汾酒",
+    "price": 141.7,
+    "prev_close": 144.06,
+    "open": 144.0,
+    "volume": 41550,
+    "change_amount": -2.36,
+    "change_pct": -1.64,
+    "updated_at": "20260403161404",
+    "source": "live"
+  }
+}

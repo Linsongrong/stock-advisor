@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:29",
+  "data": {
+    "code": "000651",
+    "name": "格力电器",
+    "price": 37.47,
+    "prev_close": 37.85,
+    "open": 37.81,
+    "volume": 172135,
+    "change_amount": -0.38,
+    "change_pct": -1.0,
+    "updated_at": "20260403161427",
+    "source": "live"
+  }
+}

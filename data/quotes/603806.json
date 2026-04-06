@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:50",
+  "data": {
+    "code": "603806",
+    "name": "福斯特",
+    "price": 16.85,
+    "prev_close": 17.67,
+    "open": 17.52,
+    "volume": 373747,
+    "change_amount": -0.82,
+    "change_pct": -4.64,
+    "updated_at": "20260403161415",
+    "source": "live"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:25",
+  "data": {
+    "code": "000543",
+    "name": "皖能电力",
+    "price": 7.99,
+    "prev_close": 8.22,
+    "open": 8.18,
+    "volume": 461849,
+    "change_amount": -0.23,
+    "change_pct": -2.8,
+    "updated_at": "20260403161421",
+    "source": "live"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:25",
+  "data": {
+    "code": "002714",
+    "name": "牧原股份",
+    "price": 42.9,
+    "prev_close": 43.65,
+    "open": 43.43,
+    "volume": 264134,
+    "change_amount": -0.75,
+    "change_pct": -1.72,
+    "updated_at": "20260403161412",
+    "source": "live"
+  }
+}

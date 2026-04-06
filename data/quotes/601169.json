@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:11",
+  "data": {
+    "code": "601169",
+    "name": "北京银行",
+    "price": 5.44,
+    "prev_close": 5.5,
+    "open": 5.51,
+    "volume": 952259,
+    "change_amount": -0.06,
+    "change_pct": -1.09,
+    "updated_at": "20260403161421",
+    "source": "live"
+  }
+}

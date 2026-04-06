@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:26",
+  "data": {
+    "code": "600025",
+    "name": "华能水电",
+    "price": 9.71,
+    "prev_close": 9.88,
+    "open": 9.87,
+    "volume": 198417,
+    "change_amount": -0.17,
+    "change_pct": -1.72,
+    "updated_at": "20260403161407",
+    "source": "live"
+  }
+}

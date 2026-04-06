@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:17",
+  "data": {
+    "code": "002648",
+    "name": "卫星化学",
+    "price": 26.67,
+    "prev_close": 27.11,
+    "open": 27.18,
+    "volume": 404984,
+    "change_amount": -0.44,
+    "change_pct": -1.62,
+    "updated_at": "20260403161406",
+    "source": "live"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:09",
+  "data": {
+    "code": "600089",
+    "name": "特变电工",
+    "price": 25.5,
+    "prev_close": 26.17,
+    "open": 26.21,
+    "volume": 1448389,
+    "change_amount": -0.67,
+    "change_pct": -2.56,
+    "updated_at": "20260403161413",
+    "source": "live"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:03",
+  "data": {
+    "code": "002230",
+    "name": "科大讯飞",
+    "price": 45.72,
+    "prev_close": 45.88,
+    "open": 46.02,
+    "volume": 186961,
+    "change_amount": -0.16,
+    "change_pct": -0.35,
+    "updated_at": "20260403161457",
+    "source": "live"
+  }
+}

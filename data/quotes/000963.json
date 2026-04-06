@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:33",
+  "data": {
+    "code": "000963",
+    "name": "华东医药",
+    "price": 36.29,
+    "prev_close": 36.88,
+    "open": 36.3,
+    "volume": 115373,
+    "change_amount": -0.59,
+    "change_pct": -1.6,
+    "updated_at": "20260403161427",
+    "source": "live"
+  }
+}

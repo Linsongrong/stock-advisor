@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:23",
+  "data": {
+    "code": "002304",
+    "name": "洋河股份",
+    "price": 50.66,
+    "prev_close": 51.85,
+    "open": 51.85,
+    "volume": 35701,
+    "change_amount": -1.19,
+    "change_pct": -2.3,
+    "updated_at": "20260403161424",
+    "source": "live"
+  }
+}

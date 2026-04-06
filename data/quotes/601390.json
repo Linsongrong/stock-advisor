@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:36",
+  "data": {
+    "code": "601390",
+    "name": "中国中铁",
+    "price": 5.2,
+    "prev_close": 5.35,
+    "open": 5.36,
+    "volume": 2699330,
+    "change_amount": -0.15,
+    "change_pct": -2.8,
+    "updated_at": "20260403161403",
+    "source": "live"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:06",
+  "data": {
+    "code": "600941",
+    "name": "中国移动",
+    "price": 93.02,
+    "prev_close": 93.28,
+    "open": 93.29,
+    "volume": 70717,
+    "change_amount": -0.26,
+    "change_pct": -0.28,
+    "updated_at": "20260403161420",
+    "source": "live"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:49",
+  "data": {
+    "code": "601865",
+    "name": "福莱特",
+    "price": 13.46,
+    "prev_close": 13.88,
+    "open": 13.83,
+    "volume": 172918,
+    "change_amount": -0.42,
+    "change_pct": -3.03,
+    "updated_at": "20260403161427",
+    "source": "live"
+  }
+}

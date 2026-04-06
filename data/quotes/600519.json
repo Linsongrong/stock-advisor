@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:25",
+  "data": {
+    "code": "600519",
+    "name": "贵州茅台",
+    "price": 1460.0,
+    "prev_close": 1459.88,
+    "open": 1459.54,
+    "volume": 20194,
+    "change_amount": 0.12,
+    "change_pct": 0.01,
+    "updated_at": "20260403161427",
+    "source": "live"
+  }
+}

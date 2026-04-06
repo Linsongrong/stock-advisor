@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:11",
+  "data": {
+    "code": "600928",
+    "name": "西安银行",
+    "price": 3.54,
+    "prev_close": 3.63,
+    "open": 3.62,
+    "volume": 196418,
+    "change_amount": -0.09,
+    "change_pct": -2.48,
+    "updated_at": "20260403161417",
+    "source": "live"
+  }
+}

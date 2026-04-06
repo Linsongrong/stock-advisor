@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:52:15",
+  "data": {
+    "code": "601818",
+    "name": "光大银行",
+    "price": 3.19,
+    "prev_close": 3.19,
+    "open": 3.2,
+    "volume": 1429312,
+    "change_amount": 0.0,
+    "change_pct": 0.0,
+    "updated_at": "20260403161413",
+    "source": "live"
+  }
+}

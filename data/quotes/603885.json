@@ -1,0 +1,15 @@
+{
+  "saved_at": "2026-04-06T17:53:37",
+  "data": {
+    "code": "603885",
+    "name": "吉祥航空",
+    "price": 12.08,
+    "prev_close": 12.18,
+    "open": 12.22,
+    "volume": 92935,
+    "change_amount": -0.1,
+    "change_pct": -0.82,
+    "updated_at": "20260403161412",
+    "source": "live"
+  }
+}
