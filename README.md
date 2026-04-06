@@ -1,5 +1,157 @@
 # A-share Stock Advisor MVP
 
+## 中文说明
+
+这是一个轻量级的 A 股选股与报告生成工具，依赖很少，只使用：
+
+- `requests`
+- `numpy`
+- `matplotlib`
+
+它会抓取行情数据，按多因子模型为股票打分、排序，并生成每日 Markdown 报告和 K 线图。
+
+### 数据来源
+
+- 股票池：
+  - 优先使用东方财富列表接口自动刷新股票池
+  - 失败时退回到代码内置的板块股票池
+- 实时行情：
+  - 腾讯财经 `https://qt.gtimg.cn/q=sh{code}` / `sz{code}`
+- 日线 K 线：
+  - 同花顺 / 10jqka `https://d.10jqka.com.cn/v6/line/hs_{code}/01/last.js`
+- 基本面数据：
+  - 新浪财经 `jsvar.js`
+  - 解析字段包括 `TTM EPS`、`上年 EPS`、`每股净资产`
+  - `PE / PB / ROE` 在本地计算得到
+- 情绪数据：
+  - 新浪个股资讯页 `vCB_AllNewsStock`
+  - 抽取最近资讯标题，并基于关键词做情绪打分
+
+### 项目结构
+
+- `config.py`：路径、阈值、原始权重、归一化后的运行时权重
+- `stock_universe.py`：股票池抓取、缓存和硬编码兜底池
+- `data_fetcher.py`：行情和 K 线抓取，支持缓存回退
+- `factors/capital.py`：资金流代理因子
+- `factors/technical.py`：技术指标和技术面打分
+- `factors/fundamental.py`：基本面抓取、缓存和打分
+- `factors/sentiment.py`：资讯解析、情绪缓存和打分
+- `scorer.py`：统一加权评分引擎
+- `screener.py`：全市场筛选、排序、过滤和二阶段情绪补分
+- `reporter.py`：Markdown 报告和 K 线图生成
+- `run.py`：CLI 入口
+- `tests/test_regressions.py`：解析器、缓存、权重和评分回归测试
+
+### 评分流程
+
+1. 构建股票池。
+2. 抓取全股票池的实时行情和日线 K 线。
+3. 批量抓取基本面数据。
+4. 第一轮先不带情绪因子，对全部股票打分。
+5. 只对第一轮前 30 名候选股抓取情绪数据。
+6. 用情绪数据对这些股票重新打分，再做最终排序并保留 Top `N`。
+7. 输出 `reports/YYYY-MM-DD.md` 和最多 3 张图表。
+
+### 因子模型
+
+每个因子都返回 `0-100` 分，最终总分是所有因子组的加权和。
+
+`config.py` 中维护的是原始权重，运行时会自动归一化，保证总权重严格等于 `1.00`。
+
+归一化后的组权重大致为：
+
+- 资金面：约 `48.1%`
+- 技术面：约 `33.7%`
+- 基本面：约 `11.5%`
+- 情绪面：约 `6.7%`
+
+归一化前的原始权重为：
+
+- 资金面：
+  - 净流入代理 `0.22`
+  - 量比 `0.13`
+  - 换手异常 `0.08`
+  - 放量突破 `0.07`
+- 技术面：
+  - MACD `0.09`
+  - RSI `0.09`
+  - 均线排列 `0.08`
+  - 突破 `0.04`
+  - 趋势强度 `0.05`
+- 基本面：
+  - PE 分数 `0.04`
+  - PB 分数 `0.03`
+  - ROE 分数 `0.03`
+  - 成长分数 `0.02`
+- 情绪面：
+  - 情绪分数 `0.07`
+
+规则说明：
+
+- `RSI > 80` 的股票会被过滤掉。
+- 单只股票抓取失败或打分失败不会中断整次运行。
+- 基本面或情绪数据缺失时，会尽量退回到中性行为而不是直接报错退出。
+
+### 缓存文件
+
+运行过程中会生成这些缓存：
+
+- `data/quotes/*.json`
+- `data/kline/*.json`
+- `data/universe_cache.json`
+- `data/fundamental_cache.json`
+- `data/sentiment_cache.json`
+
+缓存策略：
+
+- 默认优先使用实时数据。
+- 如果本地有新鲜缓存，会优先复用缓存。
+- 基本面和情绪数据在必要时允许回退到过期缓存。
+- 即使实时行情或 K 线源不可用，只要缓存存在，系统仍会尽量完成报告生成。
+
+### 使用方式
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+运行筛选：
+
+```bash
+python run.py
+python run.py --top 5
+```
+
+运行回归测试：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+### 输出内容
+
+- 报告：`reports/YYYY-MM-DD.md`
+- 图表：`reports/YYYY-MM-DD_01_CODE.png`、`reports/YYYY-MM-DD_02_CODE.png`、`reports/YYYY-MM-DD_03_CODE.png`
+
+报告中包括：
+
+- 本次运行摘要
+- Top `N` 股票列表
+- 资金面、技术面、基本面、情绪面和总分
+- 最多 3 只股票的图表区块，附带 RSI、MA20、突破参考位等指标
+
+### 运行说明
+
+- 全市场运行可能需要一定时间，因为行情、K 线、基本面和二阶段情绪都依赖远程请求。
+- 情绪面只对第一轮 Top 30 候选股抓取，这是为了控制总耗时。
+- 系统设计目标是“尽量降级不崩溃”，即部分抓取失败也应尽可能产出报告。
+
+---
+
+## English
+
 This project is a lightweight A-share stock screening and reporting tool built with:
 
 - `requests`
@@ -8,7 +160,7 @@ This project is a lightweight A-share stock screening and reporting tool built w
 
 It fetches market data, scores stocks with a multi-factor model, ranks candidates, and writes a daily Markdown report with chart images.
 
-## Data Sources
+### Data Sources
 
 - Stock universe:
   - Eastmoney list API for automatic universe refresh
@@ -25,7 +177,7 @@ It fetches market data, scores stocks with a multi-factor model, ranks candidate
   - Sina stock-specific news page `vCB_AllNewsStock`
   - The parser extracts recent stock news titles and applies keyword-based sentiment scoring
 
-## Project Structure
+### Project Structure
 
 - `config.py`: paths, thresholds, raw weights, and normalized runtime weights
 - `stock_universe.py`: stock universe fetch, cache, and hardcoded fallback pools
@@ -40,7 +192,7 @@ It fetches market data, scores stocks with a multi-factor model, ranks candidate
 - `run.py`: CLI entrypoint
 - `tests/test_regressions.py`: parser, cache, weight, and score regression tests
 
-## Scoring Pipeline
+### Scoring Pipeline
 
 1. Build the stock universe.
 2. Fetch quote and K-line data for the full universe.
@@ -50,7 +202,7 @@ It fetches market data, scores stocks with a multi-factor model, ranks candidate
 6. Re-score those candidates with sentiment, sort again, and keep top `N`.
 7. Write `reports/YYYY-MM-DD.md` and up to 3 chart images.
 
-## Factor Model
+### Factor Model
 
 Each factor returns a score in the `0-100` range. The final score is the weighted sum of all factor groups.
 
@@ -90,7 +242,7 @@ Rules:
 - Failed fetches or scoring errors are skipped instead of aborting the run.
 - Missing fundamental or sentiment data falls back to neutral behavior where possible.
 
-## Cache Files
+### Cache Files
 
 Generated cache files include:
 
@@ -107,7 +259,7 @@ Cache behavior:
 - Stale cache may still be used as a fallback for fundamentals and sentiment.
 - If live quote or K-line sources are unavailable, the system falls back to cache and still tries to produce a report.
 
-## Usage
+### Usage
 
 Install dependencies:
 
@@ -128,7 +280,7 @@ Run regression tests:
 python -m unittest discover -s tests -v
 ```
 
-## Output
+### Output
 
 - Report Markdown: `reports/YYYY-MM-DD.md`
 - Top chart images: `reports/YYYY-MM-DD_01_CODE.png`, `reports/YYYY-MM-DD_02_CODE.png`, `reports/YYYY-MM-DD_03_CODE.png`
@@ -140,7 +292,7 @@ The report includes:
 - Capital, technical, fundamental, sentiment, and total scores
 - Up to 3 chart sections with RSI, MA20, and breakout reference levels
 
-## Runtime Notes
+### Runtime Notes
 
 - The full market run can take noticeable time because quote, K-line, fundamentals, and second-pass sentiment are all fetched remotely.
 - Sentiment is intentionally delayed until the top 30 pass 1 candidates to reduce total runtime.
