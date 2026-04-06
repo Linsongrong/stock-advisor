@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+data/quotes/
+data/kline/
+data/universe_cache.json
+data/fundamental_cache.json
+data/sentiment_cache.json
+
+reports/*.md
+reports/*.png
