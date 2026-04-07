@@ -28,7 +28,22 @@ from config import DEFAULT_TOP_N, MIN_KLINE_DAYS, ensure_runtime_directories
 from data_fetcher import MarketDataFetcher
 from reporter import generate_report
 from screener import screen_market
-from stock_universe import get_stock_universe
+from stock_universe import get_stock_universe_with_source
+
+
+def _format_source_usage(source_usage, source_name: str) -> str:
+    usage = source_usage.get(source_name, {}) if isinstance(source_usage, dict) else {}
+    return (
+        "{name}: live={live}, snapshot={snapshot}, cache_fresh={fresh}, cache_stale={stale}, derived={derived}, unavailable={unavailable}".format(
+            name=source_name,
+            live=int(usage.get("live", 0)),
+            snapshot=int(usage.get("universe_snapshot", 0)),
+            fresh=int(usage.get("cache_fresh", 0)),
+            stale=int(usage.get("cache_stale", 0)),
+            derived=int(usage.get("derived_kline", 0)),
+            unavailable=int(usage.get("unavailable", 0)),
+        )
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -176,7 +191,7 @@ def main() -> int:
     if args.backtest:
         if args.refresh_history:
             ensure_runtime_directories()
-            universe = get_stock_universe()
+            universe, _ = get_stock_universe_with_source()
             fetcher = MarketDataFetcher()
             refresh_result = fetcher.refresh_kline_cache_for_universe(
                 universe,
@@ -231,20 +246,40 @@ def main() -> int:
         return 0
 
     ensure_runtime_directories()
-    universe = get_stock_universe()
+    universe, universe_source = get_stock_universe_with_source()
     fetcher = MarketDataFetcher()
     market_data = fetcher.fetch_universe_data(universe)
+    market_data["universe_source"] = universe_source
     screened_data = screen_market(market_data, top_n=top_n)
     report_path = generate_report(screened_data, top_n=top_n)
+    prefilter = market_data.get("prefilter", {})
+    fundamental_pool = screened_data.get("fundamental_pool", {})
 
     print("A-share Stock Advisor MVP")
     print(f"Universe size: {len(universe)}")
+    print(f"Universe source: {universe_source}")
+    print(
+        "Quote prefilter: {status} ({selected}/{input_count}, seed_quotes={seed_quotes})".format(
+            status="on" if prefilter.get("enabled") else "off",
+            selected=int(prefilter.get("selected_count", len(universe)) or 0),
+            input_count=int(prefilter.get("input_count", len(universe)) or 0),
+            seed_quotes=int(prefilter.get("seed_quote_count", 0) or 0),
+        )
+    )
+    print(
+        "Fundamental pool: {selected}/{input_count}".format(
+            selected=int(fundamental_pool.get("selected_count", screened_data.get("fetched_count", 0)) or 0),
+            input_count=int(fundamental_pool.get("input_count", screened_data.get("fetched_count", 0)) or 0),
+        )
+    )
     print(
         "Source status: quote={quote}, kline={kline}".format(
             quote="up" if market_data.get("source_status", {}).get("quote") else "down",
             kline="up" if market_data.get("source_status", {}).get("kline") else "down",
         )
     )
+    print(f"Source usage: {_format_source_usage(market_data.get('source_usage', {}), 'quote')}")
+    print(f"Source usage: {_format_source_usage(market_data.get('source_usage', {}), 'kline')}")
     print(f"Fetched successfully: {screened_data['fetched_count']}")
     print(f"Qualified candidates: {screened_data['qualified_count']}")
     print(f"Filtered out (RSI > 80): {screened_data['filtered_count']}")

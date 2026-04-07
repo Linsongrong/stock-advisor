@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from factors.market_activity import calculate_volume_profile
+
 
 def _score(value: float) -> float:
     return round(max(0.0, min(100.0, value)), 2)
@@ -26,16 +28,19 @@ def calculate_capital_factors(quote: Dict[str, Any], kline: List[Dict[str, Any]]
 
     latest = kline[-1]
     history = kline[:-1] if len(kline) > 1 else kline
+    volume_profile = calculate_volume_profile(quote, kline)
 
     current_price = float(quote.get("price") or latest.get("close") or 0)
     open_price = float(quote.get("open") or latest.get("open") or 0)
     prev_close = float(quote.get("prev_close") or (history[-1]["close"] if history else 0) or 0)
-    current_volume = float(quote.get("volume") or latest.get("volume") or 0)
-
-    avg5_volume = _extract_volume(history or kline, 5)
-    avg10_volume = _extract_volume(history or kline, 10)
-    volume_ratio = current_volume / avg5_volume if avg5_volume > 0 else 1.0
-    turnover_ratio = current_volume / avg10_volume if avg10_volume > 0 else volume_ratio
+    current_volume = float(volume_profile.get("current_volume", 0.0))
+    avg5_volume = float(volume_profile.get("avg5_volume", 0.0))
+    avg10_volume = float(volume_profile.get("avg10_volume", 0.0))
+    volume_ratio = float(volume_profile.get("volume_ratio", 1.0))
+    raw_volume_ratio = float(volume_profile.get("raw_volume_ratio", volume_ratio))
+    turnover_ratio = float(volume_profile.get("turnover_ratio", volume_ratio))
+    estimated_full_day_volume = float(volume_profile.get("estimated_full_day_volume", current_volume))
+    trading_progress = float(volume_profile.get("trading_progress", 1.0))
 
     intraday_return = (current_price / open_price - 1.0) if open_price > 0 else 0.0
     day_change = (current_price / prev_close - 1.0) if prev_close > 0 else 0.0
@@ -85,6 +90,9 @@ def calculate_capital_factors(quote: Dict[str, Any], kline: List[Dict[str, Any]]
             "current_volume": int(current_volume),
             "avg5_volume": round(avg5_volume, 2),
             "avg10_volume": round(avg10_volume, 2),
+            "estimated_full_day_volume": round(estimated_full_day_volume, 2),
+            "trading_progress_pct": round(trading_progress * 100, 2),
+            "raw_volume_ratio": round(raw_volume_ratio, 3),
             "volume_ratio": round(volume_ratio, 3),
             "turnover_ratio": round(turnover_ratio, 3),
             "intraday_return_pct": round(intraday_return * 100, 2),

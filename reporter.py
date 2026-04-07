@@ -141,12 +141,30 @@ def _build_table_rows(stocks: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+def _format_source_usage(source_usage: Dict[str, Dict[str, int]], source_name: str) -> str:
+    usage = source_usage.get(source_name, {}) if isinstance(source_usage, dict) else {}
+    return (
+        "{name}: live={live}, snapshot={snapshot}, cache_fresh={fresh}, cache_stale={stale}, derived={derived}, unavailable={unavailable}".format(
+            name=source_name,
+            live=int(usage.get("live", 0)),
+            snapshot=int(usage.get("universe_snapshot", 0)),
+            fresh=int(usage.get("cache_fresh", 0)),
+            stale=int(usage.get("cache_stale", 0)),
+            derived=int(usage.get("derived_kline", 0)),
+            unavailable=int(usage.get("unavailable", 0)),
+        )
+    )
+
+
 def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
     """Generate the markdown report and save charts for the Top 3 picks."""
     ensure_runtime_directories()
     report_date = screened_data.get("report_date") or date.today().isoformat()
     report_path = REPORTS_DIR / f"{report_date}.md"
     top_stocks = screened_data.get("top_stocks", [])[:top_n]
+    source_usage = screened_data.get("source_usage", {})
+    prefilter = screened_data.get("prefilter", {})
+    fundamental_pool = screened_data.get("fundamental_pool", {})
 
     chart_names: Dict[str, str] = {}
     for rank, stock in enumerate(top_stocks[:MAX_CHART_STOCKS], start=1):
@@ -161,6 +179,17 @@ def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
         "",
         "## Summary",
         f"- Universe size: {screened_data.get('universe_size', 0)}",
+        f"- Universe source: {screened_data.get('universe_source') or 'unknown'}",
+        "- Quote prefilter: {status} ({selected}/{input_count}, seed_quotes={seed_quotes})".format(
+            status="on" if prefilter.get("enabled") else "off",
+            selected=int(prefilter.get("selected_count", screened_data.get("universe_size", 0)) or 0),
+            input_count=int(prefilter.get("input_count", screened_data.get("universe_size", 0)) or 0),
+            seed_quotes=int(prefilter.get("seed_quote_count", 0) or 0),
+        ),
+        "- Fundamental pool: {selected}/{input_count}".format(
+            selected=int(fundamental_pool.get("selected_count", screened_data.get("fetched_count", 0)) or 0),
+            input_count=int(fundamental_pool.get("input_count", screened_data.get("fetched_count", 0)) or 0),
+        ),
         f"- Successfully fetched: {screened_data.get('fetched_count', 0)}",
         f"- Qualified after filters: {screened_data.get('qualified_count', 0)}",
         f"- Filtered out by RSI > 80: {screened_data.get('filtered_count', 0)}",
@@ -169,6 +198,8 @@ def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
             quote="up" if screened_data.get("source_status", {}).get("quote") else "down",
             kline="up" if screened_data.get("source_status", {}).get("kline") else "down",
         ),
+        f"- Source usage: {_format_source_usage(source_usage, 'quote')}",
+        f"- Source usage: {_format_source_usage(source_usage, 'kline')}",
         "",
         f"## Top {top_n}",
         "",

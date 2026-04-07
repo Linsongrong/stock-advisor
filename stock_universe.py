@@ -1,14 +1,31 @@
 # -*- coding: utf-8 -*-
-"""Stock universe: auto-fetch CSI 300/500 with hardcoded fallback."""
+"""Stock universe: auto-fetch a broad A-share list with sector metadata."""
 
 import json
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from config import REQUEST_TIMEOUT, USER_AGENT, UNIVERSE_CACHE_PATH, UNIVERSE_CACHE_MAX_AGE_HOURS
+from config import (
+    QUOTE_CACHE_MAX_AGE_MINUTES,
+    REQUEST_TIMEOUT,
+    USER_AGENT,
+    UNIVERSE_CACHE_PATH,
+    UNIVERSE_CACHE_MAX_AGE_HOURS,
+)
+
+
+UNIVERSE_CACHE_VERSION = 3
+AUTO_UNIVERSE_PAGE_SIZE = 800
+AUTO_UNIVERSE_MARKET_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
+SINA_UNIVERSE_NODE = "hs_a"
+SINA_UNIVERSE_PAGE_SIZE = 1000
+SINA_ALLOWED_SYMBOL_PREFIXES = ("sh", "sz")
 
 
 SECTOR_POOLS: Dict[str, List[Tuple[str, str]]] = {
@@ -357,75 +374,271 @@ SECTOR_POOLS: Dict[str, List[Tuple[str, str]]] = {
 }
 
 
-def _fetch_eastmoney_universe() -> List[Dict[str, str]]:
-    """Try to fetch CSI 300 + CSI 500 from eastmoney API."""
-    stocks = []
-    seen = set()
-    headers = {"User-Agent": USER_AGENT}
+def _build_retry_session() -> requests.Session:
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        max_retries=Retry(
+            total=1,
+            connect=1,
+            read=1,
+            status=1,
+            backoff_factor=0.2,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET",),
+            raise_on_status=False,
+        )
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
-    # CSI 300 (m:0+t:6 = SH main, m:0+t:80 = SH others, m:1+t:2 = SZ main, m:1+t:23 = SZ chiNext)
-    fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
-    url = "https://push2his.eastmoney.com/api/qt/clist/get"
-    params = {"pn": 1, "pz": 800, "fs": fs, "fields": "f12,f14"}
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value in ("", None, "--"):
+            return default
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        if value in ("", None, "--"):
+            return default
+        return int(float(str(value).replace(",", "")))
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_sina_quote_snapshot(item: Dict[str, str], snapshot_saved_at: str) -> Dict[str, object]:
+    ticktime = str(item.get("ticktime", "")).strip()
+    snapshot_date = snapshot_saved_at[:10]
+    updated_at = snapshot_saved_at
+    if ticktime and len(snapshot_date) == 10:
+        updated_at = f"{snapshot_date}T{ticktime}"
+
+    return {
+        "code": str(item.get("code", "")).strip(),
+        "name": str(item.get("name", "")).strip(),
+        "price": _safe_float(item.get("trade")),
+        "prev_close": _safe_float(item.get("settlement")),
+        "open": _safe_float(item.get("open")),
+        "volume": _safe_int(item.get("volume")),
+        "volume_input": _safe_int(item.get("volume")),
+        "volume_input_unit": "shares",
+        "volume_unit": "shares",
+        "amount": _safe_float(item.get("amount")),
+        "change_amount": _safe_float(item.get("pricechange")),
+        "change_pct": _safe_float(item.get("changepercent")),
+        "updated_at": updated_at,
+        "source": "universe_snapshot",
+    }
+
+
+def _normalize_eastmoney_items(raw_items) -> List[Dict[str, str]]:
+    if isinstance(raw_items, dict):
+        items = list(raw_items.values())
+    elif isinstance(raw_items, list):
+        items = raw_items
+    else:
+        items = []
+
+    stocks: List[Dict[str, str]] = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("f12", "")).strip()
+        name = str(item.get("f14", "")).strip()
+        sector = str(item.get("f100", "")).strip() or "auto_broad_eastmoney"
+        if code and code not in seen and len(code) == 6:
+            seen.add(code)
+            stocks.append({"code": code, "name": name, "sector": sector})
+    stocks.sort(key=lambda entry: entry["code"])
+    return stocks
+
+
+def _get_hardcoded_sector_map() -> Dict[str, str]:
+    sector_map: Dict[str, str] = {}
+    for sector, stocks in SECTOR_POOLS.items():
+        for code, _ in stocks:
+            sector_map.setdefault(code, sector)
+    return sector_map
+
+
+def _fetch_eastmoney_universe() -> List[Dict[str, str]]:
+    """Fetch a broad A-share universe with Eastmoney industry metadata."""
+    headers = {"User-Agent": USER_AGENT}
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": 1,
+        "pz": AUTO_UNIVERSE_PAGE_SIZE,
+        "fs": AUTO_UNIVERSE_MARKET_FILTER,
+        "fields": "f12,f14,f100",
+    }
+    session = _build_retry_session()
 
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        resp = session.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
         if resp.status_code == 200:
             data = resp.json()
-            items = data.get("data", {}).get("diff", [])
-            if items:
-                for item in items:
-                    code = str(item.get("f12", ""))
-                    name = str(item.get("f14", ""))
-                    if code and code not in seen and len(code) == 6:
-                        seen.add(code)
-                        stocks.append({"code": code, "name": name, "sector": "auto"})
+            stocks = _normalize_eastmoney_items(data.get("data", {}).get("diff", []))
+            if stocks:
+                return stocks
     except Exception:
         pass
 
+    return []
+
+
+def _fetch_sina_universe() -> List[Dict[str, str]]:
+    """Fetch a broad A-share universe from Sina market center pages."""
+    session = _build_retry_session()
+    headers = {"User-Agent": USER_AGENT}
+    sector_map = _get_hardcoded_sector_map()
+    count_url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
+    page_url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeDataSimple"
+
+    try:
+        count_resp = session.get(
+            count_url,
+            params={"node": SINA_UNIVERSE_NODE},
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+        )
+        count_resp.raise_for_status()
+        total_count = int(json.loads(count_resp.text))
+    except Exception:
+        return []
+
+    page_count = max(1, math.ceil(total_count / SINA_UNIVERSE_PAGE_SIZE))
+    snapshot_saved_at = datetime.now().isoformat(timespec="seconds")
+    stocks: List[Dict[str, str]] = []
+    seen = set()
+
+    for page in range(1, page_count + 1):
+        try:
+            resp = session.get(
+                page_url,
+                params={
+                    "page": page,
+                    "num": SINA_UNIVERSE_PAGE_SIZE,
+                    "sort": "symbol",
+                    "asc": 1,
+                    "node": SINA_UNIVERSE_NODE,
+                    "symbol": "",
+                    "_s_r_a": "page",
+                },
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            items = json.loads(resp.text)
+        except Exception:
+            continue
+
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol", "")).strip().lower()
+            code = str(item.get("code", "")).strip()
+            name = str(item.get("name", "")).strip()
+            if not symbol.startswith(SINA_ALLOWED_SYMBOL_PREFIXES):
+                continue
+            if code and code not in seen and len(code) == 6:
+                seen.add(code)
+                stocks.append(
+                    {
+                        "code": code,
+                        "name": name,
+                        "sector": sector_map.get(code, "auto_broad_sina"),
+                        "quote_snapshot": _build_sina_quote_snapshot(item, snapshot_saved_at),
+                        "quote_snapshot_saved_at": snapshot_saved_at,
+                    }
+                )
+
+    stocks.sort(key=lambda item: item["code"])
     return stocks
+
+
+def _load_universe_cache_payload() -> Tuple[List[Dict[str, str]], str, str]:
+    """Load cached universe plus its recorded source when fresh."""
+    if not UNIVERSE_CACHE_PATH.exists():
+        return [], "", ""
+    try:
+        data = json.loads(UNIVERSE_CACHE_PATH.read_text(encoding="utf-8"))
+        if int(data.get("version", 0)) != UNIVERSE_CACHE_VERSION:
+            return [], "", ""
+        saved = datetime.fromisoformat(data.get("saved_at", "2000-01-01"))
+        if datetime.now() - saved <= timedelta(hours=UNIVERSE_CACHE_MAX_AGE_HOURS):
+            stocks = data.get("stocks", [])
+            if isinstance(stocks, list):
+                return stocks, str(data.get("source", "")).strip(), str(data.get("saved_at", "")).strip()
+    except Exception:
+        pass
+    return [], "", ""
 
 
 def _load_universe_cache() -> List[Dict[str, str]]:
     """Load cached universe if fresh."""
-    if not UNIVERSE_CACHE_PATH.exists():
-        return []
+    return _load_universe_cache_payload()[0]
+
+
+def _snapshot_cache_is_fresh(saved_at: str) -> bool:
     try:
-        data = json.loads(UNIVERSE_CACHE_PATH.read_text(encoding="utf-8"))
-        saved = datetime.fromisoformat(data.get("saved_at", "2000-01-01"))
-        if datetime.now() - saved <= timedelta(hours=UNIVERSE_CACHE_MAX_AGE_HOURS):
-            return data.get("stocks", [])
+        saved = datetime.fromisoformat(saved_at)
     except Exception:
-        pass
-    return []
+        return False
+    return datetime.now() - saved <= timedelta(minutes=QUOTE_CACHE_MAX_AGE_MINUTES)
 
 
-def _save_universe_cache(stocks: List[Dict[str, str]]) -> None:
+def _save_universe_cache(stocks: List[Dict[str, str]], source: str) -> None:
     """Save universe to cache."""
     UNIVERSE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cached_stocks = [item for item in stocks if isinstance(item, dict)]
     payload = {
+        "version": UNIVERSE_CACHE_VERSION,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "count": len(stocks),
-        "stocks": stocks,
+        "source": source,
+        "count": len(cached_stocks),
+        "stocks": cached_stocks,
     }
     UNIVERSE_CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def get_stock_universe() -> List[Dict[str, str]]:
-    """Return stock universe: try auto-fetch, fallback to hardcoded."""
-    # Try cache first
-    cached = _load_universe_cache()
+def get_stock_universe_with_source() -> Tuple[List[Dict[str, str]], str]:
+    """Return stock universe plus the source label used for this run."""
+    cached, cached_source, cached_saved_at = _load_universe_cache_payload()
     if cached:
-        return cached
+        if cached_source == "sina_broad_market" and not _snapshot_cache_is_fresh(cached_saved_at):
+            refreshed = _fetch_sina_universe()
+            if refreshed:
+                _save_universe_cache(refreshed, cached_source)
+                return refreshed, f"{cached_source}_live"
+        return cached, f"{cached_source or 'auto'}_cache"
 
-    # Try auto-fetch
     fetched = _fetch_eastmoney_universe()
     if fetched:
-        _save_universe_cache(fetched)
-        return fetched
+        source = "eastmoney_broad_market"
+        _save_universe_cache(fetched, source)
+        return fetched, f"{source}_live"
 
-    # Fallback to hardcoded
-    return _get_hardcoded_universe()
+    fetched = _fetch_sina_universe()
+    if fetched:
+        source = "sina_broad_market"
+        _save_universe_cache(fetched, source)
+        return fetched, f"{source}_live"
+
+    return _get_hardcoded_universe(), "hardcoded_fallback"
+
+
+def get_stock_universe() -> List[Dict[str, str]]:
+    """Return stock universe: broad auto-fetch first, hardcoded fallback second."""
+    return get_stock_universe_with_source()[0]
 
 
 def _get_hardcoded_universe() -> List[Dict[str, str]]:

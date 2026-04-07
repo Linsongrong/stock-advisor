@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 import numpy as np
 
 from config import BREAKOUT_LOOKBACK_DAYS
+from factors.market_activity import calculate_volume_profile
 
 
 def _score(value: float) -> float:
@@ -69,9 +70,13 @@ def calculate_technical_factors(
         adjusted_closes[-1] = live_price
 
     current_close = float(adjusted_closes[-1])
-    current_volume = float(quote.get("volume") or volumes[-1] or 0)
-    avg5_volume = _series_mean(volumes[:-1], 5) if volumes.size > 1 else float(volumes[-1])
-    volume_ratio = current_volume / avg5_volume if avg5_volume > 0 else 1.0
+    volume_profile = calculate_volume_profile(quote, kline)
+    current_volume = float(volume_profile.get("current_volume", 0.0))
+    avg5_volume = float(volume_profile.get("avg5_volume", 0.0)) or (float(volumes[-1]) if volumes.size else 0.0)
+    volume_ratio = float(volume_profile.get("volume_ratio", 1.0))
+    raw_volume_ratio = float(volume_profile.get("raw_volume_ratio", volume_ratio))
+    estimated_full_day_volume = float(volume_profile.get("estimated_full_day_volume", current_volume))
+    trading_progress = float(volume_profile.get("trading_progress", 1.0))
 
     ema12 = _ema(adjusted_closes, 12)
     ema26 = _ema(adjusted_closes, 26)
@@ -171,6 +176,11 @@ def calculate_technical_factors(
             "ma20": round(ma20, 4),
             "ma60": round(ma60, 4),
             "breakout_level": round(previous_high, 4),
+            "current_volume": round(current_volume, 2),
+            "avg5_volume": round(avg5_volume, 2),
+            "estimated_full_day_volume": round(estimated_full_day_volume, 2),
+            "trading_progress_pct": round(trading_progress * 100, 2),
+            "raw_volume_ratio": round(raw_volume_ratio, 3),
             "volume_ratio": round(volume_ratio, 3),
             "latest_high": round(float(highs[-1]), 4),
             "latest_low": round(float(lows[-1]), 4),
