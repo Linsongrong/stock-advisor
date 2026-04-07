@@ -36,11 +36,15 @@
 - `factors/technical.py`：技术指标和技术面打分
 - `factors/fundamental.py`：基本面抓取、缓存和打分
 - `factors/sentiment.py`：资讯解析、情绪缓存和打分
+- `backtester.py`：基于本地 K 线缓存的历史回测框架
+- `backtest_scan.py`：参数扫描与分时期回测对比
 - `scorer.py`：统一加权评分引擎
 - `screener.py`：全市场筛选、排序、过滤和二阶段情绪补分
 - `reporter.py`：Markdown 报告和 K 线图生成
 - `run.py`：CLI 入口
 - `tests/test_regressions.py`：解析器、缓存、权重和评分回归测试
+- `tests/test_backtester.py`：回测构造和小样本回测测试
+- `tests/test_backtest_scan.py`：参数扫描工具测试
 
 ### 评分流程
 
@@ -124,6 +128,21 @@ python run.py
 python run.py --top 5
 ```
 
+运行历史回测：
+
+```bash
+python run.py --backtest
+python run.py --backtest --refresh-history
+python run.py --backtest --top 5 --rebalance-days 5 --hold-days 5
+python run.py --backtest --top 5 --start-date 2025-12-01 --end-date 2026-03-31
+python run.py --backtest --commission-rate 0.0003 --slippage-rate 0.0005 --sell-tax-rate 0.0005
+python run.py --backtest --top 5 --keep-rank 10
+python run.py --backtest --max-forward-return-pct 50
+python run.py --scan-backtests
+python run.py --scan-backtests --scan-regimes
+python run.py --scan-backtests --scan-start-dates 2016-01-01,2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
+```
+
 运行回归测试：
 
 ```bash
@@ -134,6 +153,7 @@ python -m unittest discover -s tests -v
 
 - 报告：`reports/YYYY-MM-DD.md`
 - 图表：`reports/YYYY-MM-DD_01_CODE.png`、`reports/YYYY-MM-DD_02_CODE.png`、`reports/YYYY-MM-DD_03_CODE.png`
+- 回测报告：`reports/backtests/*.md`
 
 报告中包括：
 
@@ -141,12 +161,19 @@ python -m unittest discover -s tests -v
 - Top `N` 股票列表
 - 资金面、技术面、基本面、情绪面和总分
 - 最多 3 只股票的图表区块，附带 RSI、MA20、突破参考位等指标
+- 回测结果会额外包含换手率、成本拖累、毛收益、净收益和基准对比
+- `keep-rank` 可以保留还在较高排名区间内的旧持仓，用来降低无效换手
+- `--refresh-history` 会在回测前主动刷新本地 K 线缓存，并优先保存更长历史版本
+- `--max-forward-return-pct` 会过滤掉异常大的前瞻收益样本，降低复权口径或极端事件对长期回测的污染
+- `--scan-backtests` 会批量比较不同参数组合，并输出分窗口扫描报告
+- `--scan-regimes` 会使用内置的市场阶段窗口做扫描，例如 `2016-2019`、`2020-2022`、`2023-至今`
 
 ### 运行说明
 
 - 全市场运行可能需要一定时间，因为行情、K 线、基本面和二阶段情绪都依赖远程请求。
 - 情绪面只对第一轮 Top 30 候选股抓取，这是为了控制总耗时。
 - 系统设计目标是“尽量降级不崩溃”，即部分抓取失败也应尽可能产出报告。
+- 回测当前默认使用本地 K 线缓存，并默认启用一组可调整的交易成本假设。
 
 ---
 
@@ -191,6 +218,10 @@ It fetches market data, scores stocks with a multi-factor model, ranks candidate
 - `reporter.py`: Markdown report and candlestick chart generation
 - `run.py`: CLI entrypoint
 - `tests/test_regressions.py`: parser, cache, weight, and score regression tests
+- `backtester.py`: historical backtesting framework using local K-line cache
+- `backtest_scan.py`: parameter scan and multi-window backtest comparison
+- `tests/test_backtester.py`: backtest helper and small-fixture backtest tests
+- `tests/test_backtest_scan.py`: parameter scan tool tests
 
 ### Scoring Pipeline
 
@@ -274,6 +305,21 @@ python run.py
 python run.py --top 5
 ```
 
+Run a historical backtest:
+
+```bash
+python run.py --backtest
+python run.py --backtest --refresh-history
+python run.py --backtest --top 5 --rebalance-days 5 --hold-days 5
+python run.py --backtest --top 5 --start-date 2025-12-01 --end-date 2026-03-31
+python run.py --backtest --commission-rate 0.0003 --slippage-rate 0.0005 --sell-tax-rate 0.0005
+python run.py --backtest --top 5 --keep-rank 10
+python run.py --backtest --max-forward-return-pct 50
+python run.py --scan-backtests
+python run.py --scan-backtests --scan-regimes
+python run.py --scan-backtests --scan-start-dates 2016-01-01,2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
+```
+
 Run regression tests:
 
 ```bash
@@ -284,6 +330,8 @@ python -m unittest discover -s tests -v
 
 - Report Markdown: `reports/YYYY-MM-DD.md`
 - Top chart images: `reports/YYYY-MM-DD_01_CODE.png`, `reports/YYYY-MM-DD_02_CODE.png`, `reports/YYYY-MM-DD_03_CODE.png`
+- Backtest reports: `reports/backtests/*.md`
+- Scan reports: `reports/backtests/sweeps/*.md`
 
 The report includes:
 
@@ -291,9 +339,16 @@ The report includes:
 - Top `N` ranked stocks
 - Capital, technical, fundamental, sentiment, and total scores
 - Up to 3 chart sections with RSI, MA20, and breakout reference levels
+- Backtest reports additionally include turnover, cost drag, gross returns, net returns, and benchmark comparison
+- `keep-rank` can retain prior holdings that still rank well enough, reducing unnecessary turnover
+- `--refresh-history` refreshes local K-line cache before backtesting and prefers the longer history endpoint
+- `--max-forward-return-pct` filters abnormally large forward-return samples that can distort long-horizon backtests
+- `--scan-backtests` runs a small parameter scan and writes a multi-window comparison report
+- `--scan-regimes` uses built-in market-regime windows such as `2016-2019`, `2020-2022`, and `2023-now`
 
 ### Runtime Notes
 
 - The full market run can take noticeable time because quote, K-line, fundamentals, and second-pass sentiment are all fetched remotely.
 - Sentiment is intentionally delayed until the top 30 pass 1 candidates to reduce total runtime.
 - The project is designed to degrade gracefully: partial failures should not stop report generation.
+- Backtests currently use local K-line cache and a configurable transaction-cost assumption by default.

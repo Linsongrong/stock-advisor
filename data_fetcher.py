@@ -231,6 +231,7 @@ class MarketDataFetcher:
             f"https://d.10jqka.com.cn/v6/line/hs_{code}/01/last.js",
             f"https://d.10jqka.com.cn/v6/line/hs_{code}/01/last36000.js",
         ]
+        best_rows: List[Dict[str, Any]] = []
 
         for url in urls:
             try:
@@ -281,8 +282,55 @@ class MarketDataFetcher:
 
             if rows:
                 rows.sort(key=lambda item: item["date"])
-                return rows
-        return None
+                if len(rows) > len(best_rows):
+                    best_rows = rows
+        return best_rows or None
+
+    def refresh_kline_cache_for_universe(
+        self,
+        universe: List[Dict[str, str]],
+        max_workers: int = MAX_WORKERS,
+        max_stocks: int = 0,
+    ) -> Dict[str, Any]:
+        """Refresh local K-line cache using the longest live history available."""
+        targets = [stock for stock in universe if stock.get("code")]
+        if max_stocks > 0:
+            targets = targets[:max_stocks]
+
+        updated_codes: List[str] = []
+        failed_codes: List[str] = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(self.fetch_kline_live, stock["code"]): stock["code"]
+                for stock in targets
+            }
+            for future in as_completed(future_map):
+                code = future_map[future]
+                try:
+                    rows = future.result()
+                except Exception:
+                    rows = None
+
+                if not rows:
+                    failed_codes.append(code)
+                    continue
+
+                try:
+                    self._write_cache(KLINE_CACHE_DIR / f"{code}.json", rows)
+                    updated_codes.append(code)
+                except OSError:
+                    failed_codes.append(code)
+
+        updated_codes.sort()
+        failed_codes.sort()
+        return {
+            "requested_count": len(targets),
+            "updated_count": len(updated_codes),
+            "failed_count": len(failed_codes),
+            "updated_codes": updated_codes,
+            "failed_codes": failed_codes,
+        }
 
     def get_quote(self, code: str, allow_live: bool = True) -> Optional[Dict[str, Any]]:
         """Get quote data using live request first, then cache fallback."""

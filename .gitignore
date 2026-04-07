@@ -9,3 +9,4 @@ data/sentiment_cache.json
 
 reports/*.md
 reports/*.png
+reports/backtests/
