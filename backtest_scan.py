@@ -6,6 +6,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from config import DEFAULT_LOW_EXPOSURE, DEFAULT_MAX_PER_SECTOR, DEFAULT_MIN_BREADTH_ABOVE_MA20, DEFAULT_MIN_PRICE_FILTER
 from backtester import (
     BACKTEST_REPORTS_DIR,
     _annualized_return,
@@ -20,13 +21,12 @@ from backtester import (
 
 
 SWEEP_REPORTS_DIR = BACKTEST_REPORTS_DIR / "sweeps"
-DEFAULT_SCAN_START_DATES = ("2016-01-01", "2020-01-01")
+DEFAULT_SCAN_START_DATES = ("2020-01-01",)
 DEFAULT_SCAN_TOP_NS = (5,)
 DEFAULT_SCAN_HOLD_DAYS = (5, 10, 20)
 DEFAULT_SCAN_REBALANCE_DAYS = (5, 10, 20)
 DEFAULT_SCAN_KEEP_RANKS = (0,)
 DEFAULT_SCAN_WINDOWS: Tuple[Tuple[str, str, str], ...] = (
-    ("2016-2019", "2016-01-01", "2019-12-31"),
     ("2020-2022", "2020-01-01", "2022-12-31"),
     ("2023-now", "2023-01-01", ""),
 )
@@ -68,6 +68,48 @@ def _rank_key(scan: Dict[str, Any]):
         -float(summary.get("max_drawdown_pct", 0.0)),
         float(summary.get("cumulative_net_return_pct", 0.0)),
     )
+
+
+def _cross_window_rank_key(item: Dict[str, Any]):
+    return (
+        float(item.get("worst_annualized_net_return_pct", 0.0)),
+        float(item.get("average_annualized_net_return_pct", 0.0)),
+        float(item.get("average_sharpe_ratio", 0.0)),
+        -float(item.get("worst_max_drawdown_pct", 0.0)),
+        float(item.get("average_cumulative_net_return_pct", 0.0)),
+    )
+
+
+def _aggregate_scan_configs(results: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for item in results:
+        grouped.setdefault(_config_label(item), []).append(item)
+
+    aggregate = []
+    for label, items in grouped.items():
+        annualized = [float(item["summary"].get("annualized_net_return_pct", 0.0)) for item in items]
+        cumulative = [float(item["summary"].get("cumulative_net_return_pct", 0.0)) for item in items]
+        sharpe = [float(item["summary"].get("sharpe_ratio", 0.0)) for item in items]
+        drawdowns = [float(item["summary"].get("max_drawdown_pct", 0.0)) for item in items]
+        aggregate.append(
+            {
+                "label": label,
+                "top_n": items[0]["top_n"],
+                "hold_days": items[0]["hold_days"],
+                "rebalance_days": items[0]["rebalance_days"],
+                "keep_rank": items[0]["keep_rank"],
+                "window_count": len(items),
+                "average_annualized_net_return_pct": round(mean(annualized), 2) if annualized else 0.0,
+                "worst_annualized_net_return_pct": round(min(annualized), 2) if annualized else 0.0,
+                "average_cumulative_net_return_pct": round(mean(cumulative), 2) if cumulative else 0.0,
+                "worst_cumulative_net_return_pct": round(min(cumulative), 2) if cumulative else 0.0,
+                "average_sharpe_ratio": round(mean(sharpe), 2) if sharpe else 0.0,
+                "worst_max_drawdown_pct": round(max(drawdowns), 2) if drawdowns else 0.0,
+            }
+        )
+
+    aggregate.sort(key=_cross_window_rank_key, reverse=True)
+    return aggregate
 
 
 def _filter_periods(periods: Sequence[Dict[str, Any]], start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -169,6 +211,10 @@ def scan_backtests_on_histories(
     commission_rate: float = 0.0003,
     slippage_rate: float = 0.0005,
     sell_tax_rate: float = 0.0005,
+    max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+    min_price_filter: float = DEFAULT_MIN_PRICE_FILTER,
+    min_breadth_above_ma20: float = DEFAULT_MIN_BREADTH_ABOVE_MA20,
+    low_exposure: float = DEFAULT_LOW_EXPOSURE,
     max_forward_return_pct: float = 50.0,
     enabled_groups: Sequence[str] = ("capital", "technical"),
 ) -> Dict[str, Any]:
@@ -178,9 +224,9 @@ def scan_backtests_on_histories(
     if not scan_windows:
         scan_windows = [(start_date, start_date, end_date or "") for start_date in start_dates]
 
-    full_scan_start = min(window[1] for window in scan_windows)
-    full_scan_end = "" if any(not window[2] for window in scan_windows) else max(window[2] for window in scan_windows)
     universe_size = len(histories)
+    score_cache: Dict[Any, Any] = {}
+    forward_return_cache: Dict[Any, Any] = {}
 
     for top_n, hold_days, rebalance_days, keep_rank in product(
         top_ns,
@@ -191,25 +237,31 @@ def scan_backtests_on_histories(
         if rebalance_days <= 0 or hold_days <= 0 or top_n <= 0:
             continue
 
-        full_result = run_backtest_on_histories(
-            histories,
-            top_n=top_n,
-            start_date=full_scan_start,
-            end_date=full_scan_end or None,
-            hold_days=hold_days,
-            rebalance_days=rebalance_days,
-            min_history=min_history,
-            min_candidates=max(top_n, min_candidates),
-            enabled_groups=enabled_groups,
-            commission_rate=commission_rate,
-            slippage_rate=slippage_rate,
-            sell_tax_rate=sell_tax_rate,
-            keep_rank=keep_rank,
-            max_forward_return_pct=max_forward_return_pct,
-        )
         for window_label, window_start, window_end in scan_windows:
-            filtered_periods = _filter_periods(full_result["periods"], window_start, window_end)
-            summary = _summarize_period_subset(filtered_periods, universe_size, rebalance_days)
+            window_result = run_backtest_on_histories(
+                histories,
+                top_n=top_n,
+                start_date=window_start,
+                end_date=window_end or None,
+                hold_days=hold_days,
+                rebalance_days=rebalance_days,
+                min_history=min_history,
+                min_candidates=max(top_n, min_candidates),
+                enabled_groups=enabled_groups,
+                commission_rate=commission_rate,
+                slippage_rate=slippage_rate,
+                sell_tax_rate=sell_tax_rate,
+                keep_rank=keep_rank,
+                max_per_sector=max_per_sector,
+                min_price_filter=min_price_filter,
+                min_breadth_above_ma20=min_breadth_above_ma20,
+                low_exposure=low_exposure,
+                max_forward_return_pct=max_forward_return_pct,
+                score_cache=score_cache,
+                forward_return_cache=forward_return_cache,
+            )
+            summary = dict(window_result["summary"])
+            summary["universe_size"] = universe_size
             results.append(
                 {
                     "window_label": window_label,
@@ -220,9 +272,9 @@ def scan_backtests_on_histories(
                     "rebalance_days": rebalance_days,
                     "keep_rank": keep_rank,
                     "summary": summary,
-                    "params": full_result["params"],
-                    "yearly_summary": _summarize_years(filtered_periods),
-                    "top_symbols": _summarize_symbols(filtered_periods)[:10],
+                    "params": window_result["params"],
+                    "yearly_summary": window_result.get("yearly_summary", []),
+                    "top_symbols": window_result.get("top_symbols", [])[:10],
                 }
             )
 
@@ -236,6 +288,7 @@ def scan_backtests_on_histories(
     return {
         "results": results,
         "grouped": grouped,
+        "cross_window": _aggregate_scan_configs(results),
         "scan_params": {
             "windows": scan_windows,
             "start_dates": list(start_dates),
@@ -250,6 +303,10 @@ def scan_backtests_on_histories(
             "commission_rate": commission_rate,
             "slippage_rate": slippage_rate,
             "sell_tax_rate": sell_tax_rate,
+            "max_per_sector": max_per_sector,
+            "min_price_filter": min_price_filter,
+            "min_breadth_above_ma20": min_breadth_above_ma20,
+            "low_exposure": low_exposure,
             "max_forward_return_pct": max_forward_return_pct,
         },
     }
@@ -264,7 +321,11 @@ def _scan_filename(scan_params: Dict[str, Any]) -> str:
     holds = "-".join(str(item) for item in scan_params.get("hold_days_list", [])) or "na"
     steps = "-".join(str(item) for item in scan_params.get("rebalance_days_list", [])) or "na"
     keeps = "-".join(str(item) for item in scan_params.get("keep_ranks", [])) or "na"
-    return f"scan_{starts}_{groups}_top{tops}_hold{holds}_step{steps}_keep{keeps}.md"
+    sector = int(scan_params.get("max_per_sector", 0) or 0)
+    min_price = int(round(float(scan_params.get("min_price_filter", 0.0)) * 100))
+    breadth = int(round(float(scan_params.get("min_breadth_above_ma20", 0.0)) * 100))
+    low_exposure = int(round(float(scan_params.get("low_exposure", 0.0)) * 100))
+    return f"scan_{starts}_{groups}_top{tops}_hold{holds}_step{steps}_keep{keeps}_sector{sector}_minp{min_price}_breadth{breadth}_lowexp{low_exposure}.md"
 
 
 def write_backtest_scan_report(scan_result: Dict[str, Any]) -> Path:
@@ -272,6 +333,7 @@ def write_backtest_scan_report(scan_result: Dict[str, Any]) -> Path:
 
     scan_params = scan_result["scan_params"]
     grouped = scan_result["grouped"]
+    cross_window = scan_result.get("cross_window", [])
     report_path = SWEEP_REPORTS_DIR / _scan_filename(scan_params)
 
     lines = [
@@ -285,10 +347,39 @@ def write_backtest_scan_report(scan_result: Dict[str, Any]) -> Path:
         f"- Hold day options: {scan_params.get('hold_days_list')}",
         f"- Rebalance day options: {scan_params.get('rebalance_days_list')}",
         f"- Keep rank options: {scan_params.get('keep_ranks')}",
+        f"- Max per sector: {scan_params.get('max_per_sector', 0) or 'disabled'}",
+        f"- Min price filter: {float(scan_params.get('min_price_filter', 0.0)):.2f}" if float(scan_params.get('min_price_filter', 0.0)) > 0 else "- Min price filter: disabled",
+        f"- Min breadth above MA20: {float(scan_params.get('min_breadth_above_ma20', 0.0)):.2f}" if float(scan_params.get('min_breadth_above_ma20', 0.0)) > 0 else "- Min breadth above MA20: disabled",
+        f"- Low exposure in weak regime: {float(scan_params.get('low_exposure', 0.0)):.2f}" if float(scan_params.get('min_breadth_above_ma20', 0.0)) > 0 else "- Low exposure in weak regime: disabled",
         f"- Enabled groups: {', '.join(scan_params.get('enabled_groups', []))}",
         f"- Max forward return filter: +/-{float(scan_params.get('max_forward_return_pct', 0.0)):.2f}%",
         "",
     ]
+
+    if cross_window:
+        lines.extend(
+            [
+                "## Cross-Window Ranking",
+                "",
+                "| Rank | Config | Windows | Avg Ann Net | Worst Ann Net | Avg Cum Net | Worst Cum Net | Avg Sharpe | Worst Max DD |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for index, item in enumerate(cross_window, start=1):
+            lines.append(
+                "| {rank} | {label} | {windows} | {avg_ann:.2f}% | {worst_ann:.2f}% | {avg_cum:.2f}% | {worst_cum:.2f}% | {avg_sharpe:.2f} | {worst_dd:.2f}% |".format(
+                    rank=index,
+                    label=item["label"],
+                    windows=item["window_count"],
+                    avg_ann=item["average_annualized_net_return_pct"],
+                    worst_ann=item["worst_annualized_net_return_pct"],
+                    avg_cum=item["average_cumulative_net_return_pct"],
+                    worst_cum=item["worst_cumulative_net_return_pct"],
+                    avg_sharpe=item["average_sharpe_ratio"],
+                    worst_dd=item["worst_max_drawdown_pct"],
+                )
+            )
+        lines.append("")
 
     for window_label, items in grouped.items():
         window_desc = "{start} -> {end}".format(
@@ -338,6 +429,10 @@ def run_backtest_scan(
     commission_rate: float = 0.0003,
     slippage_rate: float = 0.0005,
     sell_tax_rate: float = 0.0005,
+    max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+    min_price_filter: float = DEFAULT_MIN_PRICE_FILTER,
+    min_breadth_above_ma20: float = DEFAULT_MIN_BREADTH_ABOVE_MA20,
+    low_exposure: float = DEFAULT_LOW_EXPOSURE,
     max_forward_return_pct: float = 50.0,
     enabled_groups: Sequence[str] = ("capital", "technical"),
     max_stocks: int = 0,
@@ -357,6 +452,10 @@ def run_backtest_scan(
         commission_rate=commission_rate,
         slippage_rate=slippage_rate,
         sell_tax_rate=sell_tax_rate,
+        max_per_sector=max_per_sector,
+        min_price_filter=min_price_filter,
+        min_breadth_above_ma20=min_breadth_above_ma20,
+        low_exposure=low_exposure,
         max_forward_return_pct=max_forward_return_pct,
         enabled_groups=enabled_groups,
     )

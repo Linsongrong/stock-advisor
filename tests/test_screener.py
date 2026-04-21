@@ -109,6 +109,174 @@ class ScreenerTests(unittest.TestCase):
         self.assertEqual(result["fundamental_pool"]["selected_count"], 20)
         self.assertEqual(result["fundamental_pool"]["input_count"], 50)
 
+    def test_screen_market_applies_sector_cap_to_top_list(self) -> None:
+        stocks = [
+            {
+                "code": "000001",
+                "name": "A1",
+                "sector": "alpha",
+                "quote": {"price": 10.0},
+                "kline": [{"date": "2026-04-07", "close": 10.0}],
+            },
+            {
+                "code": "000002",
+                "name": "A2",
+                "sector": "alpha",
+                "quote": {"price": 10.0},
+                "kline": [{"date": "2026-04-07", "close": 10.0}],
+            },
+            {
+                "code": "000003",
+                "name": "B1",
+                "sector": "beta",
+                "quote": {"price": 10.0},
+                "kline": [{"date": "2026-04-07", "close": 10.0}],
+            },
+        ]
+        market_data = {"stocks": stocks, "failed": []}
+        score_map = {"000001": 95.0, "000002": 90.0, "000003": 80.0}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            total = score_map[bundle["code"]]
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "price": 10.0,
+                "change_pct": 1.0,
+                "capital_score": total,
+                "technical_score": total,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "total_score": total,
+                "technical_indicators": {"rsi": 50.0},
+                "quote": bundle["quote"],
+                "kline": bundle["kline"],
+                "filtered_out": False,
+            }
+
+        with mock.patch.object(screener, "FUNDAMENTAL_PREFETCH_POOL", 0):
+            with mock.patch("screener.score_stock", side_effect=fake_score):
+                with mock.patch("screener.batch_fetch_sentiment", return_value={}):
+                    with mock.patch("screener.batch_fetch_fundamentals", return_value={}):
+                        result = screener.screen_market(
+                            market_data,
+                            top_n=2,
+                            fetch_sentiment=False,
+                            max_per_sector=1,
+                        )
+
+        self.assertEqual([item["code"] for item in result["top_stocks"]], ["000001", "000003"])
+        self.assertEqual(result["max_per_sector"], 1)
+
+    def test_screen_market_filters_low_price_candidates(self) -> None:
+        stocks = [
+            {
+                "code": "000001",
+                "name": "cheap",
+                "sector": "alpha",
+                "quote": {"price": 3.0},
+                "kline": [{"date": "2026-04-07", "close": 3.0}],
+            },
+            {
+                "code": "000002",
+                "name": "normal",
+                "sector": "beta",
+                "quote": {"price": 10.0},
+                "kline": [{"date": "2026-04-07", "close": 10.0}],
+            },
+        ]
+        market_data = {"stocks": stocks, "failed": []}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "price": float(bundle["quote"]["price"]),
+                "change_pct": 1.0,
+                "capital_score": 80.0,
+                "technical_score": 80.0,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "total_score": 80.0,
+                "technical_indicators": {"rsi": 50.0},
+                "quote": bundle["quote"],
+                "kline": bundle["kline"],
+                "filtered_out": False,
+            }
+
+        with mock.patch.object(screener, "FUNDAMENTAL_PREFETCH_POOL", 0):
+            with mock.patch("screener.score_stock", side_effect=fake_score):
+                with mock.patch("screener.batch_fetch_sentiment", return_value={}):
+                    with mock.patch("screener.batch_fetch_fundamentals", return_value={}):
+                        result = screener.screen_market(
+                            market_data,
+                            top_n=2,
+                            fetch_sentiment=False,
+                            min_price_filter=5.0,
+                        )
+
+        self.assertEqual([item["code"] for item in result["top_stocks"]], ["000002"])
+        self.assertEqual(result["filtered_count"], 1)
+        self.assertEqual(result["min_price_filter"], 5.0)
+
+    def test_screen_market_can_reduce_exposure_from_breadth(self) -> None:
+        stocks = [
+            {
+                "code": "000001",
+                "name": "leader",
+                "sector": "alpha",
+                "quote": {"price": 10.0},
+                "kline": [{"date": "2026-04-07", "close": 10.0}],
+            },
+            {
+                "code": "000002",
+                "name": "laggard",
+                "sector": "beta",
+                "quote": {"price": 8.0},
+                "kline": [{"date": "2026-04-07", "close": 8.0}],
+            },
+        ]
+        market_data = {"stocks": stocks, "failed": []}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            ma20 = 9.0 if bundle["code"] == "000001" else 9.5
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "price": float(bundle["quote"]["price"]),
+                "change_pct": 1.0,
+                "capital_score": 80.0,
+                "technical_score": 80.0,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "total_score": 80.0,
+                "technical_indicators": {"rsi": 50.0, "ma20": ma20},
+                "quote": bundle["quote"],
+                "kline": bundle["kline"],
+                "filtered_out": False,
+            }
+
+        with mock.patch.object(screener, "FUNDAMENTAL_PREFETCH_POOL", 0):
+            with mock.patch("screener.score_stock", side_effect=fake_score):
+                with mock.patch("screener.batch_fetch_sentiment", return_value={}):
+                    with mock.patch("screener.batch_fetch_fundamentals", return_value={}):
+                        result = screener.screen_market(
+                            market_data,
+                            top_n=2,
+                            fetch_sentiment=False,
+                            min_price_filter=0.0,
+                            min_breadth_above_ma20=0.75,
+                            low_exposure=0.6,
+                        )
+
+        self.assertEqual(len(result["top_stocks"]), 2)
+        self.assertTrue(result["risk_off"])
+        self.assertEqual(result["market_breadth"]["above_ma20_ratio"], 0.5)
+        self.assertEqual(result["suggested_exposure"], 0.6)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,10 @@ from statistics import mean, pstdev
 from typing import Any, Dict, List, Optional, Sequence
 
 from config import (
+    DEFAULT_LOW_EXPOSURE,
+    DEFAULT_MAX_PER_SECTOR,
+    DEFAULT_MIN_BREADTH_ABOVE_MA20,
+    DEFAULT_MIN_PRICE_FILTER,
     KLINE_CACHE_DIR,
     MIN_KLINE_DAYS,
     QUOTE_CACHE_DIR,
@@ -19,13 +23,17 @@ from stock_universe import _get_hardcoded_universe, _load_universe_cache
 
 
 BACKTEST_REPORTS_DIR = REPORTS_DIR / "backtests"
+DEFAULT_BACKTEST_TOP_N = 3
+DEFAULT_HOLD_DAYS = 10
+DEFAULT_REBALANCE_DAYS = 10
 DEFAULT_ENABLED_GROUPS = ("capital", "technical")
 ALL_GROUPS = ("capital", "technical", "fundamental", "sentiment")
 DEFAULT_COMMISSION_RATE = 0.0003
 DEFAULT_SLIPPAGE_RATE = 0.0005
 DEFAULT_SELL_TAX_RATE = 0.0005
-DEFAULT_KEEP_RANK = 0
+DEFAULT_KEEP_RANK = 18
 DEFAULT_MAX_FORWARD_RETURN_PCT = 50.0
+_CACHE_MISS = object()
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -205,17 +213,18 @@ def _combine_group_scores(score_result: Dict[str, Any], enabled_groups: Sequence
     return round(weighted_score / active_weight, 2)
 
 
-def _equal_weight_map(codes: Sequence[str]) -> Dict[str, float]:
+def _equal_weight_map(codes: Sequence[str], exposure: float = 1.0) -> Dict[str, float]:
     unique_codes = [code for code in dict.fromkeys(codes) if code]
     if not unique_codes:
         return {}
-    weight = 1.0 / len(unique_codes)
+    exposure = max(0.0, min(1.0, float(exposure)))
+    if exposure <= 0:
+        return {}
+    weight = exposure / len(unique_codes)
     return {code: weight for code in unique_codes}
 
 
-def _compute_turnover(previous_codes: Sequence[str], current_codes: Sequence[str]) -> Dict[str, float]:
-    previous_weights = _equal_weight_map(previous_codes)
-    current_weights = _equal_weight_map(current_codes)
+def _compute_turnover_from_weight_maps(previous_weights: Dict[str, float], current_weights: Dict[str, float]) -> Dict[str, float]:
     symbols = set(previous_weights) | set(current_weights)
 
     buy_turnover = sum(
@@ -233,6 +242,12 @@ def _compute_turnover(previous_codes: Sequence[str], current_codes: Sequence[str
         "sell_turnover": round(sell_turnover, 6),
         "turnover": round(turnover, 6),
     }
+
+
+def _compute_turnover(previous_codes: Sequence[str], current_codes: Sequence[str]) -> Dict[str, float]:
+    previous_weights = _equal_weight_map(previous_codes)
+    current_weights = _equal_weight_map(current_codes)
+    return _compute_turnover_from_weight_maps(previous_weights, current_weights)
 
 
 def _apply_transaction_costs(
@@ -291,6 +306,81 @@ def _select_with_keep_rank(
             continue
         selected.append(item)
         selected_codes.add(code)
+
+    return selected
+
+
+def _select_with_constraints(
+    ranked: Sequence[Dict[str, Any]],
+    top_n: int,
+    previous_selected_codes: Sequence[str],
+    keep_rank: int,
+    max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+) -> List[Dict[str, Any]]:
+    if top_n <= 0:
+        return []
+
+    max_per_sector = max(0, int(max_per_sector))
+    if max_per_sector <= 0:
+        return _select_with_keep_rank(ranked, top_n, previous_selected_codes, keep_rank)
+
+    rank_map = {item["code"]: index for index, item in enumerate(ranked, start=1)}
+    item_map = {item["code"]: item for item in ranked}
+    selected: List[Dict[str, Any]] = []
+    selected_codes = set()
+    sector_counts: Dict[str, int] = {}
+
+    def _can_add(item: Dict[str, Any]) -> bool:
+        sector = str(item.get("sector", "") or "").strip()
+        if not sector:
+            return True
+        return sector_counts.get(sector, 0) < max_per_sector
+
+    def _add_item(item: Dict[str, Any]) -> None:
+        code = item["code"]
+        sector = str(item.get("sector", "") or "").strip()
+        selected.append(item)
+        selected_codes.add(code)
+        if sector:
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+    if keep_rank > 0 and previous_selected_codes:
+        keep_rank = max(int(keep_rank), top_n)
+        kept_items: List[Dict[str, Any]] = []
+        kept_codes = set()
+        for code in previous_selected_codes:
+            item = item_map.get(code)
+            rank = rank_map.get(code)
+            if item is None or rank is None or rank > keep_rank or code in kept_codes:
+                continue
+            kept_items.append(item)
+            kept_codes.add(code)
+
+        kept_items.sort(key=lambda item: (item["score"], item["capital_score"], item["technical_score"]), reverse=True)
+        for item in kept_items:
+            if len(selected) >= top_n:
+                break
+            if _can_add(item):
+                _add_item(item)
+
+    for item in ranked:
+        if len(selected) >= top_n:
+            break
+        code = item["code"]
+        if code in selected_codes or not _can_add(item):
+            continue
+        _add_item(item)
+
+    if len(selected) >= top_n:
+        return selected
+
+    for item in ranked:
+        if len(selected) >= top_n:
+            break
+        code = item["code"]
+        if code in selected_codes:
+            continue
+        _add_item(item)
 
     return selected
 
@@ -420,11 +510,11 @@ def _summarize_years(periods: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def run_backtest_on_histories(
     histories: Dict[str, Dict[str, Any]],
-    top_n: int = 10,
+    top_n: int = DEFAULT_BACKTEST_TOP_N,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    hold_days: int = 5,
-    rebalance_days: int = 5,
+    hold_days: int = DEFAULT_HOLD_DAYS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
     min_history: int = MIN_KLINE_DAYS,
     min_candidates: int = 20,
     max_periods: int = 0,
@@ -433,7 +523,13 @@ def run_backtest_on_histories(
     slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
     sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
     keep_rank: int = DEFAULT_KEEP_RANK,
+    max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+    min_price_filter: float = DEFAULT_MIN_PRICE_FILTER,
+    min_breadth_above_ma20: float = DEFAULT_MIN_BREADTH_ABOVE_MA20,
+    low_exposure: float = DEFAULT_LOW_EXPOSURE,
     max_forward_return_pct: float = DEFAULT_MAX_FORWARD_RETURN_PCT,
+    score_cache: Optional[Dict[Any, Any]] = None,
+    forward_return_cache: Optional[Dict[Any, Any]] = None,
 ) -> Dict[str, Any]:
     """Run a close-to-close historical backtest over in-memory histories."""
     groups = _normalize_enabled_groups(enabled_groups)
@@ -444,7 +540,13 @@ def run_backtest_on_histories(
     min_candidates = max(top_n, int(min_candidates))
     max_periods = max(0, int(max_periods))
     keep_rank = max(0, int(keep_rank))
+    max_per_sector = max(0, int(max_per_sector))
+    min_price_filter = max(0.0, float(min_price_filter))
+    min_breadth_above_ma20 = max(0.0, float(min_breadth_above_ma20))
+    low_exposure = max(0.0, min(1.0, float(low_exposure)))
     max_forward_return_pct = max(0.0, float(max_forward_return_pct))
+    score_cache = score_cache if score_cache is not None else {}
+    forward_return_cache = forward_return_cache if forward_return_cache is not None else {}
 
     if not histories:
         raise ValueError("no historical data available for backtest")
@@ -465,11 +567,15 @@ def run_backtest_on_histories(
     rebalance_dates = trading_dates[::rebalance_days]
     periods: List[Dict[str, Any]] = []
     previous_selected_codes: List[str] = []
+    previous_exposure = 0.0
     previous_benchmark_codes: List[str] = []
     skipped_outlier_count = 0
+    risk_off_period_count = 0
 
     for rebalance_date in rebalance_dates:
         ranked: List[Dict[str, Any]] = []
+        breadth_total = 0
+        breadth_above_ma20 = 0
 
         for stock in histories.values():
             date_index = stock.get("date_index", {})
@@ -482,20 +588,60 @@ def run_backtest_on_histories(
                 continue
 
             bundle = _build_historical_bundle(stock, signal_index)
-            forward_info = _compute_forward_return(
-                stock["rows"],
-                signal_index,
-                hold_days,
-                max_forward_return_pct=max_forward_return_pct,
-            )
             if bundle is None:
                 continue
+            if min_price_filter > 0 and float(bundle["quote"].get("price", 0.0) or 0.0) < min_price_filter:
+                continue
+            forward_key = (
+                stock["code"],
+                signal_index,
+                hold_days,
+                round(max_forward_return_pct, 4),
+            )
+            forward_info = forward_return_cache.get(forward_key, _CACHE_MISS)
+            if forward_info is _CACHE_MISS:
+                forward_info = _compute_forward_return(
+                    stock["rows"],
+                    signal_index,
+                    hold_days,
+                    max_forward_return_pct=max_forward_return_pct,
+                )
+                forward_return_cache[forward_key] = forward_info
             if forward_info is None:
                 skipped_outlier_count += 1
                 continue
 
-            score_result = score_stock(bundle, fund_data=None, sentiment_data=None)
-            if score_result.get("error") or score_result.get("filtered_out"):
+            score_key = (stock["code"], signal_index)
+            score_result = score_cache.get(score_key, _CACHE_MISS)
+            if score_result is _CACHE_MISS:
+                raw_score = score_stock(bundle, fund_data=None, sentiment_data=None)
+                if raw_score.get("error"):
+                    score_result = None
+                else:
+                    score_result = {
+                        "code": raw_score["code"],
+                        "name": raw_score["name"],
+                        "sector": raw_score.get("sector", ""),
+                        "capital_score": float(raw_score.get("capital_score", 0.0)),
+                        "technical_score": float(raw_score.get("technical_score", 0.0)),
+                        "fundamental_score": float(raw_score.get("fundamental_score", 0.0)),
+                        "sentiment_score": float(raw_score.get("sentiment_score", 0.0)),
+                        "weight_totals": dict(raw_score.get("weight_totals", {})),
+                        "price": float(raw_score.get("price", 0.0) or 0.0),
+                        "ma20": float(raw_score.get("technical_indicators", {}).get("ma20", 0.0) or 0.0),
+                        "filtered_out": bool(raw_score.get("filtered_out", False)),
+                    }
+                score_cache[score_key] = score_result
+            if score_result is None:
+                continue
+
+            price = float(score_result.get("price", 0.0) or 0.0)
+            ma20 = float(score_result.get("ma20", 0.0) or 0.0)
+            if ma20 > 0:
+                breadth_total += 1
+                if price > ma20:
+                    breadth_above_ma20 += 1
+            if score_result.get("filtered_out"):
                 continue
 
             ranked.append(
@@ -518,18 +664,34 @@ def run_backtest_on_histories(
         if len(ranked) < min_candidates:
             continue
 
+        breadth_above_ma20_ratio = round(breadth_above_ma20 / breadth_total, 4) if breadth_total else 0.0
+        is_risk_off = min_breadth_above_ma20 > 0 and breadth_above_ma20_ratio < min_breadth_above_ma20
+        target_exposure = low_exposure if is_risk_off else 1.0
+
         ranked.sort(
             key=lambda item: (item["score"], item["capital_score"], item["technical_score"]),
             reverse=True,
         )
-        picks = _select_with_keep_rank(ranked, top_n, previous_selected_codes, keep_rank)
+        picks: List[Dict[str, Any]] = []
+        if target_exposure > 0:
+            picks = _select_with_constraints(
+                ranked,
+                top_n=top_n,
+                previous_selected_codes=previous_selected_codes,
+                keep_rank=keep_rank,
+                max_per_sector=max_per_sector,
+            )
         selected_codes = [item["code"] for item in picks]
         benchmark_codes = [item["code"] for item in ranked]
 
-        portfolio_gross_return = mean(item["return_decimal"] for item in picks)
+        raw_portfolio_return = mean(item["return_decimal"] for item in picks) if picks else 0.0
+        portfolio_gross_return = raw_portfolio_return * target_exposure
         benchmark_gross_return = mean(item["return_decimal"] for item in ranked)
 
-        portfolio_turnover = _compute_turnover(previous_selected_codes, selected_codes)
+        portfolio_turnover = _compute_turnover_from_weight_maps(
+            _equal_weight_map(previous_selected_codes, exposure=previous_exposure),
+            _equal_weight_map(selected_codes, exposure=target_exposure),
+        )
         benchmark_turnover = _compute_turnover(previous_benchmark_codes, benchmark_codes)
 
         portfolio_performance = _apply_transaction_costs(
@@ -550,12 +712,13 @@ def run_backtest_on_histories(
         periods.append(
             {
                 "signal_date": rebalance_date,
-                "entry_date": picks[0]["entry_date"],
-                "exit_date": picks[0]["exit_date"],
+                "entry_date": picks[0]["entry_date"] if picks else ranked[0]["entry_date"],
+                "exit_date": picks[0]["exit_date"] if picks else ranked[0]["exit_date"],
                 "candidate_count": len(ranked),
                 "selected_count": len(picks),
                 "retained_count": sum(1 for code in selected_codes if code in previous_selected_codes),
                 "replacement_count": sum(1 for code in selected_codes if code not in previous_selected_codes),
+                "target_exposure": round(target_exposure, 2),
                 "turnover": portfolio_turnover["turnover"],
                 "buy_turnover": portfolio_turnover["buy_turnover"],
                 "sell_turnover": portfolio_turnover["sell_turnover"],
@@ -569,9 +732,14 @@ def run_backtest_on_histories(
                 "portfolio_return": portfolio_performance["net_return"],
                 "benchmark_return": benchmark_performance["net_return"],
                 "picks": picks,
+                "breadth_above_ma20_ratio": breadth_above_ma20_ratio,
+                "risk_off": is_risk_off,
             }
         )
+        if is_risk_off:
+            risk_off_period_count += 1
         previous_selected_codes = selected_codes
+        previous_exposure = target_exposure
         previous_benchmark_codes = benchmark_codes
         if max_periods and len(periods) >= max_periods:
             break
@@ -599,6 +767,10 @@ def run_backtest_on_histories(
             "slippage_rate": slippage_rate,
             "sell_tax_rate": sell_tax_rate,
             "keep_rank": keep_rank,
+            "max_per_sector": max_per_sector,
+            "min_price_filter": min_price_filter,
+            "min_breadth_above_ma20": min_breadth_above_ma20,
+            "low_exposure": low_exposure,
             "max_forward_return_pct": max_forward_return_pct,
         },
         "summary": {
@@ -607,6 +779,8 @@ def run_backtest_on_histories(
             "actual_start": periods[0]["signal_date"] if periods else "",
             "actual_end": periods[-1]["signal_date"] if periods else "",
             "skipped_outlier_count": skipped_outlier_count,
+            "risk_off_period_count": risk_off_period_count,
+            "average_exposure_pct": round(mean(period["target_exposure"] for period in periods) * 100.0, 2) if periods else 0.0,
             "average_candidates": round(mean(period["candidate_count"] for period in periods), 2) if periods else 0.0,
             "average_selected": round(mean(period["selected_count"] for period in periods), 2) if periods else 0.0,
             "average_retained": round(mean(period["retained_count"] for period in periods), 2) if periods else 0.0,
@@ -662,12 +836,18 @@ def _report_filename(summary: Dict[str, Any], params: Dict[str, Any]) -> str:
         tax=_rate_to_bps(float(params.get("sell_tax_rate", 0.0))),
     )
     keep_rank = params.get("keep_rank", 0)
+    max_per_sector = params.get("max_per_sector", 0)
+    min_price_filter = float(params.get("min_price_filter", 0.0))
+    min_breadth_above_ma20 = float(params.get("min_breadth_above_ma20", 0.0))
+    low_exposure = float(params.get("low_exposure", 0.0))
     outlier_tag = "fwd{threshold}".format(
         threshold=int(round(float(params.get("max_forward_return_pct", 0.0)))),
     )
     return (
         f"backtest_{start}_to_{end}_top{params['top_n']}_hold{params['hold_days']}"
-        f"_step{params['rebalance_days']}_{groups}_{cost_tag}_keep{keep_rank}_{outlier_tag}.md"
+        f"_step{params['rebalance_days']}_{groups}_{cost_tag}_keep{keep_rank}_sector{max_per_sector}"
+        f"_minp{int(round(min_price_filter * 100))}_breadth{int(round(min_breadth_above_ma20 * 100))}"
+        f"_lowexp{int(round(low_exposure * 100))}_{outlier_tag}.md"
     )
 
 
@@ -694,6 +874,10 @@ def write_backtest_report(result: Dict[str, Any]) -> Path:
         f"- Min history: {params.get('min_history', 0)}",
         f"- Min candidates: {params.get('min_candidates', 0)}",
         f"- Keep rank: {params.get('keep_rank', 0) or 'disabled'}",
+        f"- Max per sector: {params.get('max_per_sector', 0) or 'disabled'}",
+        f"- Min price filter: {float(params.get('min_price_filter', 0.0)):.2f}" if float(params.get('min_price_filter', 0.0)) > 0 else "- Min price filter: disabled",
+        f"- Min breadth above MA20: {float(params.get('min_breadth_above_ma20', 0.0)):.2f}" if float(params.get('min_breadth_above_ma20', 0.0)) > 0 else "- Min breadth above MA20: disabled",
+        f"- Low exposure in weak regime: {float(params.get('low_exposure', 0.0)):.2f}" if float(params.get('min_breadth_above_ma20', 0.0)) > 0 else "- Low exposure in weak regime: disabled",
         f"- Max forward return filter: +/-{float(params.get('max_forward_return_pct', 0.0)):.2f}%",
         f"- Requested date range: {params.get('start_date') or 'auto'} -> {params.get('end_date') or 'auto'}",
         f"- Commission rate: {float(params.get('commission_rate', 0.0)) * 100:.3f}%",
@@ -705,6 +889,8 @@ def write_backtest_report(result: Dict[str, Any]) -> Path:
         f"- Evaluated periods: {summary.get('period_count', 0)}",
         f"- Actual signal range: {summary.get('actual_start') or 'N/A'} -> {summary.get('actual_end') or 'N/A'}",
         f"- Skipped outlier samples: {summary.get('skipped_outlier_count', 0)}",
+        f"- Reduced-exposure periods: {summary.get('risk_off_period_count', 0)}",
+        f"- Avg exposure: {summary.get('average_exposure_pct', 0):.2f}%",
         f"- Avg candidates: {summary.get('average_candidates', 0)}",
         f"- Avg selected: {summary.get('average_selected', 0)}",
         f"- Avg retained positions: {summary.get('average_retained', 0)}",
@@ -818,11 +1004,11 @@ def write_backtest_report(result: Dict[str, Any]) -> Path:
 
 
 def run_backtest(
-    top_n: int = 10,
+    top_n: int = DEFAULT_BACKTEST_TOP_N,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    hold_days: int = 5,
-    rebalance_days: int = 5,
+    hold_days: int = DEFAULT_HOLD_DAYS,
+    rebalance_days: int = DEFAULT_REBALANCE_DAYS,
     min_history: int = MIN_KLINE_DAYS,
     min_candidates: int = 20,
     max_periods: int = 0,
@@ -832,6 +1018,10 @@ def run_backtest(
     slippage_rate: float = DEFAULT_SLIPPAGE_RATE,
     sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
     keep_rank: int = DEFAULT_KEEP_RANK,
+    max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+    min_price_filter: float = DEFAULT_MIN_PRICE_FILTER,
+    min_breadth_above_ma20: float = DEFAULT_MIN_BREADTH_ABOVE_MA20,
+    low_exposure: float = DEFAULT_LOW_EXPOSURE,
     max_forward_return_pct: float = DEFAULT_MAX_FORWARD_RETURN_PCT,
 ) -> Dict[str, Any]:
     """Run a backtest from local cache and persist a Markdown report."""
@@ -851,6 +1041,10 @@ def run_backtest(
         slippage_rate=slippage_rate,
         sell_tax_rate=sell_tax_rate,
         keep_rank=keep_rank,
+        max_per_sector=max_per_sector,
+        min_price_filter=min_price_filter,
+        min_breadth_above_ma20=min_breadth_above_ma20,
+        low_exposure=low_exposure,
         max_forward_return_pct=max_forward_return_pct,
     )
     result["report_path"] = write_backtest_report(result)

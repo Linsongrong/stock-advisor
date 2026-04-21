@@ -111,6 +111,52 @@ class BacktestScanTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["window_label"] in {"phase-a", "phase-b"}, True)
         self.assertGreaterEqual(result["grouped"]["phase-b"][0]["summary"]["period_count"], 1)
 
+    def test_scan_windows_restart_state_per_window(self):
+        histories = {
+            "AAA001": {
+                "code": "AAA001",
+                "name": "leader",
+                "sector": "test",
+                "rows": _build_rows(10.0, [0.008, -0.003, 0.01, -0.002, 0.009, 0.004] * 4, 120000),
+            },
+            "BBB001": {
+                "code": "BBB001",
+                "name": "laggard",
+                "sector": "test",
+                "rows": _build_rows(10.0, [-0.008, 0.001, -0.01, 0.0, -0.006, -0.003] * 4, 90000),
+            },
+        }
+        for stock in histories.values():
+            stock["date_index"] = {row["date"]: index for index, row in enumerate(stock["rows"])}
+
+        result = backtest_scan.scan_backtests_on_histories(
+            histories,
+            windows=[("late", "2026-01-09", "")],
+            top_ns=[1],
+            hold_days_list=[2],
+            rebalance_days_list=[2],
+            keep_ranks=[3],
+            min_history=5,
+            min_candidates=1,
+            enabled_groups=("capital", "technical"),
+        )
+        direct = backtest_scan.run_backtest_on_histories(
+            histories,
+            top_n=1,
+            start_date="2026-01-09",
+            hold_days=2,
+            rebalance_days=2,
+            min_history=5,
+            min_candidates=1,
+            enabled_groups=("capital", "technical"),
+            keep_rank=3,
+        )
+
+        self.assertEqual(
+            result["grouped"]["late"][0]["summary"]["cumulative_net_return_pct"],
+            direct["summary"]["cumulative_net_return_pct"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

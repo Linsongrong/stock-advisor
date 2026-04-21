@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Markdown report generation and K-line chart rendering."""
 
+import warnings
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
@@ -10,8 +11,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# Fix CJK font on Windows
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+# Matplotlib may emit noisy glyph warnings when falling back between Latin and CJK fonts.
+warnings.filterwarnings("ignore", message=r"Glyph .* missing from font", category=UserWarning)
+
+# Prefer DejaVu for Latin text and fall back to CJK fonts for stock names.
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei']
 plt.rcParams['axes.unicode_minus'] = False
 import numpy as np
 from matplotlib.patches import Rectangle
@@ -190,10 +194,35 @@ def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
             selected=int(fundamental_pool.get("selected_count", screened_data.get("fetched_count", 0)) or 0),
             input_count=int(fundamental_pool.get("input_count", screened_data.get("fetched_count", 0)) or 0),
         ),
+        "- Sector cap per final list: {value}".format(
+            value=int(screened_data.get("max_per_sector", 0) or 0) or "disabled",
+        ),
+        "- Min price filter: {value}".format(
+            value=f"{float(screened_data.get('min_price_filter', 0.0)):.2f}" if float(screened_data.get("min_price_filter", 0.0)) > 0 else "disabled",
+        ),
+        "- Min breadth above MA20: {value}".format(
+            value=f"{float(screened_data.get('min_breadth_above_ma20', 0.0)):.2f}" if float(screened_data.get("min_breadth_above_ma20", 0.0)) > 0 else "disabled",
+        ),
+        "- Low exposure in weak regime: {value}".format(
+            value=f"{float(screened_data.get('low_exposure', 0.0)):.2f}" if float(screened_data.get("min_breadth_above_ma20", 0.0)) > 0 else "disabled",
+        ),
         f"- Successfully fetched: {screened_data.get('fetched_count', 0)}",
         f"- Qualified after filters: {screened_data.get('qualified_count', 0)}",
-        f"- Filtered out by RSI > 80: {screened_data.get('filtered_count', 0)}",
+        f"- Filtered out by rules: {screened_data.get('filtered_count', 0)}",
         f"- Failed fetch or scoring: {screened_data.get('failed_count', 0)}",
+        "- Market breadth above MA20: {value:.2f}%".format(
+            value=float(screened_data.get("market_breadth", {}).get("above_ma20_ratio", 0.0)) * 100.0,
+        ),
+        "- Suggested exposure: {value:.0f}%".format(
+            value=float(screened_data.get("suggested_exposure", 1.0)) * 100.0,
+        ),
+        "- Risk regime: {value}".format(
+            value=(
+                f"{screened_data.get('risk_regime')} ({screened_data.get('risk_off_reason')})"
+                if screened_data.get("risk_off")
+                else "on"
+            ),
+        ),
         "- Source reachability: quote={quote}, kline={kline}".format(
             quote="up" if screened_data.get("source_status", {}).get("quote") else "down",
             kline="up" if screened_data.get("source_status", {}).get("kline") else "down",

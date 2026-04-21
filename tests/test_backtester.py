@@ -2,6 +2,7 @@
 """Tests for the historical backtesting helpers."""
 
 import unittest
+from unittest import mock
 
 import backtester
 
@@ -95,6 +96,23 @@ class BacktesterHelperTests(unittest.TestCase):
         )
 
         self.assertEqual([item["code"] for item in selected], ["OLD001", "OLD002"])
+
+    def test_select_with_constraints_limits_sector_duplicates(self):
+        ranked = [
+            {"code": "A1", "sector": "alpha", "score": 95.0, "capital_score": 95.0, "technical_score": 95.0},
+            {"code": "A2", "sector": "alpha", "score": 90.0, "capital_score": 90.0, "technical_score": 90.0},
+            {"code": "B1", "sector": "beta", "score": 80.0, "capital_score": 80.0, "technical_score": 80.0},
+        ]
+
+        selected = backtester._select_with_constraints(
+            ranked,
+            top_n=2,
+            previous_selected_codes=[],
+            keep_rank=0,
+            max_per_sector=1,
+        )
+
+        self.assertEqual([item["code"] for item in selected], ["A1", "B1"])
 
 
 class BacktesterRunTests(unittest.TestCase):
@@ -220,6 +238,238 @@ class BacktesterRunTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(baseline["summary"]["average_turnover_pct"], buffered["summary"]["average_turnover_pct"])
+
+    def test_run_backtest_on_histories_reuses_shared_score_cache(self):
+        histories = {
+            "AAA001": {
+                "code": "AAA001",
+                "name": "leader",
+                "sector": "alpha",
+                "rows": _build_rows(10.0, [0.008, -0.003, 0.01, -0.002, 0.009, 0.004] * 2, 120000),
+            },
+            "BBB001": {
+                "code": "BBB001",
+                "name": "challenger",
+                "sector": "beta",
+                "rows": _build_rows(10.1, [0.007, -0.002, 0.009, -0.001, 0.008, 0.003] * 2, 118000),
+            },
+        }
+        for stock in histories.values():
+            stock["date_index"] = {row["date"]: index for index, row in enumerate(stock["rows"])}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            total = 90.0 if bundle["code"] == "AAA001" else 80.0
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "capital_score": total,
+                "technical_score": total,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "weight_totals": {
+                    "capital": 0.5,
+                    "technical": 0.5,
+                    "fundamental": 0.0,
+                    "sentiment": 0.0,
+                },
+                "filtered_out": False,
+            }
+
+        score_cache = {}
+        forward_return_cache = {}
+        with mock.patch("backtester.score_stock", side_effect=fake_score) as mocked_score:
+            backtester.run_backtest_on_histories(
+                histories,
+                top_n=1,
+                hold_days=2,
+                rebalance_days=2,
+                min_history=5,
+                min_candidates=1,
+                enabled_groups=("capital", "technical"),
+                score_cache=score_cache,
+                forward_return_cache=forward_return_cache,
+            )
+            first_call_count = mocked_score.call_count
+            backtester.run_backtest_on_histories(
+                histories,
+                top_n=1,
+                hold_days=2,
+                rebalance_days=2,
+                min_history=5,
+                min_candidates=1,
+                enabled_groups=("capital", "technical"),
+                score_cache=score_cache,
+                forward_return_cache=forward_return_cache,
+            )
+
+        self.assertGreater(first_call_count, 0)
+        self.assertEqual(mocked_score.call_count, first_call_count)
+
+    def test_min_price_filter_excludes_low_price_leader(self):
+        histories = {
+            "AAA001": {
+                "code": "AAA001",
+                "name": "cheap_leader",
+                "sector": "alpha",
+                "rows": _build_rows(4.0, [0.008, -0.003, 0.01, -0.002, 0.009, 0.004] * 2, 120000),
+            },
+            "BBB001": {
+                "code": "BBB001",
+                "name": "normal_runner",
+                "sector": "beta",
+                "rows": _build_rows(10.0, [0.007, -0.002, 0.009, -0.001, 0.008, 0.003] * 2, 118000),
+            },
+        }
+        for stock in histories.values():
+            stock["date_index"] = {row["date"]: index for index, row in enumerate(stock["rows"])}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            total = 95.0 if bundle["code"] == "AAA001" else 85.0
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "capital_score": total,
+                "technical_score": total,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "weight_totals": {
+                    "capital": 0.5,
+                    "technical": 0.5,
+                    "fundamental": 0.0,
+                    "sentiment": 0.0,
+                },
+                "filtered_out": False,
+            }
+
+        with mock.patch("backtester.score_stock", side_effect=fake_score):
+            result = backtester.run_backtest_on_histories(
+                histories,
+                top_n=1,
+                hold_days=2,
+                rebalance_days=2,
+                min_history=5,
+                min_candidates=1,
+                enabled_groups=("capital", "technical"),
+                min_price_filter=5.0,
+            )
+
+        self.assertGreater(result["summary"]["period_count"], 0)
+        self.assertTrue(all(period["picks"][0]["code"] == "BBB001" for period in result["periods"]))
+
+    def test_breadth_filter_can_force_zero_exposure_periods(self):
+        histories = {
+            "AAA001": {
+                "code": "AAA001",
+                "name": "leader",
+                "sector": "alpha",
+                "rows": _build_rows(10.0, [0.008, -0.003, 0.01, -0.002, 0.009, 0.004] * 2, 120000),
+            },
+            "BBB001": {
+                "code": "BBB001",
+                "name": "laggard",
+                "sector": "beta",
+                "rows": _build_rows(10.0, [-0.008, 0.001, -0.01, 0.0, -0.006, -0.003] * 2, 90000),
+            },
+        }
+        for stock in histories.values():
+            stock["date_index"] = {row["date"]: index for index, row in enumerate(stock["rows"])}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            ma20 = 9.0 if bundle["code"] == "AAA001" else 11.0
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "price": float(bundle["quote"]["price"]),
+                "capital_score": 90.0 if bundle["code"] == "AAA001" else 80.0,
+                "technical_score": 90.0 if bundle["code"] == "AAA001" else 80.0,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "weight_totals": {
+                    "capital": 0.5,
+                    "technical": 0.5,
+                    "fundamental": 0.0,
+                    "sentiment": 0.0,
+                },
+                "technical_indicators": {"ma20": ma20},
+                "filtered_out": False,
+            }
+
+        with mock.patch("backtester.score_stock", side_effect=fake_score):
+            result = backtester.run_backtest_on_histories(
+                histories,
+                top_n=1,
+                hold_days=2,
+                rebalance_days=2,
+                min_history=5,
+                min_candidates=1,
+                enabled_groups=("capital", "technical"),
+                min_price_filter=0.0,
+                min_breadth_above_ma20=0.75,
+                low_exposure=0.0,
+            )
+
+        self.assertGreater(result["summary"]["risk_off_period_count"], 0)
+        self.assertTrue(all(period["selected_count"] == 0 for period in result["periods"]))
+
+    def test_breadth_filter_can_reduce_exposure_without_zeroing_positions(self):
+        histories = {
+            "AAA001": {
+                "code": "AAA001",
+                "name": "leader",
+                "sector": "alpha",
+                "rows": _build_rows(10.0, [0.008, -0.003, 0.01, -0.002, 0.009, 0.004] * 2, 120000),
+            },
+            "BBB001": {
+                "code": "BBB001",
+                "name": "laggard",
+                "sector": "beta",
+                "rows": _build_rows(10.0, [-0.008, 0.001, -0.01, 0.0, -0.006, -0.003] * 2, 90000),
+            },
+        }
+        for stock in histories.values():
+            stock["date_index"] = {row["date"]: index for index, row in enumerate(stock["rows"])}
+
+        def fake_score(bundle, fund_data=None, sentiment_data=None):
+            ma20 = 9.0 if bundle["code"] == "AAA001" else 11.0
+            return {
+                "code": bundle["code"],
+                "name": bundle["name"],
+                "sector": bundle["sector"],
+                "price": float(bundle["quote"]["price"]),
+                "capital_score": 90.0 if bundle["code"] == "AAA001" else 80.0,
+                "technical_score": 90.0 if bundle["code"] == "AAA001" else 80.0,
+                "fundamental_score": 50.0,
+                "sentiment_score": 50.0,
+                "weight_totals": {
+                    "capital": 0.5,
+                    "technical": 0.5,
+                    "fundamental": 0.0,
+                    "sentiment": 0.0,
+                },
+                "technical_indicators": {"ma20": ma20},
+                "filtered_out": False,
+            }
+
+        with mock.patch("backtester.score_stock", side_effect=fake_score):
+            result = backtester.run_backtest_on_histories(
+                histories,
+                top_n=1,
+                hold_days=2,
+                rebalance_days=2,
+                min_history=5,
+                min_candidates=1,
+                enabled_groups=("capital", "technical"),
+                min_price_filter=0.0,
+                min_breadth_above_ma20=0.75,
+                low_exposure=0.6,
+            )
+
+        self.assertGreater(result["summary"]["risk_off_period_count"], 0)
+        self.assertTrue(all(period["selected_count"] == 1 for period in result["periods"]))
+        self.assertTrue(all(period["target_exposure"] == 0.6 for period in result["periods"]))
 
 
 if __name__ == "__main__":

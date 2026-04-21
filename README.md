@@ -93,6 +93,9 @@
 规则说明：
 
 - `RSI > 80` 的股票会被过滤掉。
+- 默认会过滤价格低于 `5` 元的股票，尽量避开过于脆弱的低价票；可通过 CLI 关闭或调整。
+- 最终输出列表默认启用行业分散，同一行业最多保留 `2` 只；可通过 CLI 关闭或调整。
+- 默认会根据市场温度自动降仓：如果“站上 MA20 的股票占比”低于 `55%`，则建议把仓位降到 `60%`。
 - 单只股票抓取失败或打分失败不会中断整次运行。
 - 基本面或情绪数据缺失时，会尽量退回到中性行为而不是直接报错退出。
 
@@ -126,6 +129,10 @@ pip install -r requirements.txt
 ```bash
 python run.py
 python run.py --top 5
+python run.py --top 5 --max-per-sector 1
+python run.py --top 5 --min-price 8
+python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0.6
+python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0
 ```
 
 运行历史回测：
@@ -137,10 +144,13 @@ python run.py --backtest --top 5 --rebalance-days 5 --hold-days 5
 python run.py --backtest --top 5 --start-date 2025-12-01 --end-date 2026-03-31
 python run.py --backtest --commission-rate 0.0003 --slippage-rate 0.0005 --sell-tax-rate 0.0005
 python run.py --backtest --top 5 --keep-rank 10
+python run.py --backtest --top 3 --hold-days 10 --rebalance-days 10 --keep-rank 18 --max-per-sector 2 --min-price 5.5
+python run.py --backtest --top 3 --hold-days 10 --rebalance-days 10 --keep-rank 18 --max-per-sector 2 --min-price 5.5 --min-breadth-ma20 0.55 --low-exposure 0.6
+python run.py --backtest --top 3 --hold-days 10 --rebalance-days 10 --keep-rank 20 --max-per-sector 2 --min-price 5 --min-breadth-ma20 0.55 --low-exposure 0
 python run.py --backtest --max-forward-return-pct 50
 python run.py --scan-backtests
 python run.py --scan-backtests --scan-regimes
-python run.py --scan-backtests --scan-start-dates 2016-01-01,2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
+python run.py --scan-backtests --scan-start-dates 2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
 ```
 
 运行回归测试：
@@ -154,6 +164,7 @@ python -m unittest discover -s tests -v
 - 报告：`reports/YYYY-MM-DD.md`
 - 图表：`reports/YYYY-MM-DD_01_CODE.png`、`reports/YYYY-MM-DD_02_CODE.png`、`reports/YYYY-MM-DD_03_CODE.png`
 - 回测报告：`reports/backtests/*.md`
+- 扫描报告：`reports/backtests/sweeps/*.md`
 
 报告中包括：
 
@@ -163,17 +174,23 @@ python -m unittest discover -s tests -v
 - 最多 3 只股票的图表区块，附带 RSI、MA20、突破参考位等指标
 - 回测结果会额外包含换手率、成本拖累、毛收益、净收益和基准对比
 - `keep-rank` 可以保留还在较高排名区间内的旧持仓，用来降低无效换手
+- `max-per-sector` 可以限制最终入选组合的行业集中度，默认每个行业最多 `2` 只
+- `min-price` 可以过滤过低价的股票，默认价格底线为 `5.5`
+- `min-breadth-ma20` 可以在弱市时触发降仓，例如 `0.55` 表示只有当至少 55% 的样本股票站上 MA20 才维持满仓
+- `low-exposure` 用来定义弱市时保留多少仓位，例如 `0.6` 表示降到六成仓，`0` 表示直接空仓
 - `--refresh-history` 会在回测前主动刷新本地 K 线缓存，并优先保存更长历史版本
 - `--max-forward-return-pct` 会过滤掉异常大的前瞻收益样本，降低复权口径或极端事件对长期回测的污染
-- `--scan-backtests` 会批量比较不同参数组合，并输出分窗口扫描报告
-- `--scan-regimes` 会使用内置的市场阶段窗口做扫描，例如 `2016-2019`、`2020-2022`、`2023-至今`
+- `--scan-backtests` 会批量比较不同参数组合，并输出分窗口报告和跨窗口总榜
+- `--scan-regimes` 会使用内置的市场阶段窗口做扫描，例如 `2020-2022`、`2023-至今`
 
 ### 运行说明
 
 - 全市场运行可能需要一定时间，因为行情、K 线、基本面和二阶段情绪都依赖远程请求。
 - 情绪面只对第一轮 Top 30 候选股抓取，这是为了控制总耗时。
 - 系统设计目标是“尽量降级不崩溃”，即部分抓取失败也应尽可能产出报告。
-- 回测当前默认使用本地 K 线缓存，并默认启用一组可调整的交易成本假设。
+- 回测当前默认使用本地 K 线缓存，并默认启用一组更平衡的参数：`Top 3`、`10/10` 持有与换仓节奏、`keep-rank=18`、`max-per-sector=2`、`min-price=5.5`、`min-breadth-ma20=0.55`、`low-exposure=0.6`。
+- 如果更重视回撤而不是收益峰值，可以把 `--low-exposure 0` 作为更保守的模式。
+- 参数扫描默认聚焦 `2020` 之后，并会复用历史打分缓存，比逐组完全重算更快。
 
 ---
 
@@ -270,6 +287,9 @@ Raw factor weights before normalization:
 Rules:
 
 - Stocks with `RSI > 80` are filtered out.
+- Stocks below `5.5` are filtered by default to avoid fragile low-priced names.
+- The final list applies a sector cap by default: at most `2` picks per sector.
+- The default setup reduces exposure to `60%` when the share of stocks above `MA20` drops below `55%`.
 - Failed fetches or scoring errors are skipped instead of aborting the run.
 - Missing fundamental or sentiment data falls back to neutral behavior where possible.
 
@@ -303,6 +323,10 @@ Run the screener:
 ```bash
 python run.py
 python run.py --top 5
+python run.py --top 5 --max-per-sector 1
+python run.py --top 5 --min-price 8
+python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0.6
+python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0
 ```
 
 Run a historical backtest:
@@ -314,10 +338,13 @@ python run.py --backtest --top 5 --rebalance-days 5 --hold-days 5
 python run.py --backtest --top 5 --start-date 2025-12-01 --end-date 2026-03-31
 python run.py --backtest --commission-rate 0.0003 --slippage-rate 0.0005 --sell-tax-rate 0.0005
 python run.py --backtest --top 5 --keep-rank 10
+python run.py --backtest --top 3 --hold-days 10 --rebalance-days 10 --keep-rank 18 --max-per-sector 2 --min-price 5.5
+python run.py --backtest --top 3 --hold-days 10 --rebalance-days 10 --keep-rank 18 --max-per-sector 2 --min-price 5.5 --min-breadth-ma20 0.55 --low-exposure 0.6
+python run.py --backtest --top 3 --hold-days 10 --rebalance-days 10 --keep-rank 20 --max-per-sector 2 --min-price 5 --min-breadth-ma20 0.55 --low-exposure 0
 python run.py --backtest --max-forward-return-pct 50
 python run.py --scan-backtests
 python run.py --scan-backtests --scan-regimes
-python run.py --scan-backtests --scan-start-dates 2016-01-01,2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
+python run.py --scan-backtests --scan-start-dates 2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
 ```
 
 Run regression tests:
@@ -341,14 +368,19 @@ The report includes:
 - Up to 3 chart sections with RSI, MA20, and breakout reference levels
 - Backtest reports additionally include turnover, cost drag, gross returns, net returns, and benchmark comparison
 - `keep-rank` can retain prior holdings that still rank well enough, reducing unnecessary turnover
+- `max-per-sector` limits concentration in the final list, defaulting to `2` picks per sector
+- `min-price` filters out low-priced stocks, defaulting to `5.5`
+- `min-breadth-ma20` triggers lower exposure in weak markets
+- `low-exposure` defines how much capital remains deployed in weak regimes
 - `--refresh-history` refreshes local K-line cache before backtesting and prefers the longer history endpoint
 - `--max-forward-return-pct` filters abnormally large forward-return samples that can distort long-horizon backtests
-- `--scan-backtests` runs a small parameter scan and writes a multi-window comparison report
-- `--scan-regimes` uses built-in market-regime windows such as `2016-2019`, `2020-2022`, and `2023-now`
+- `--scan-backtests` runs a parameter scan and writes both per-window tables and a cross-window ranking
+- `--scan-regimes` uses built-in windows such as `2020-2022` and `2023-now`
 
 ### Runtime Notes
 
 - The full market run can take noticeable time because quote, K-line, fundamentals, and second-pass sentiment are all fetched remotely.
 - Sentiment is intentionally delayed until the top 30 pass 1 candidates to reduce total runtime.
 - The project is designed to degrade gracefully: partial failures should not stop report generation.
-- Backtests currently use local K-line cache and a configurable transaction-cost assumption by default.
+- Backtests currently use local K-line cache and a more balanced default setup: `Top 3`, `10/10` rebalance cadence, `keep-rank=18`, `max-per-sector=2`, `min-price=5.5`, `min-breadth-ma20=0.55`, and `low-exposure=0.6`.
+- Parameter scans now focus on `2020+` by default and reuse cached scores to reduce repeated work.

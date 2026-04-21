@@ -16,10 +16,17 @@ from backtest_scan import (
     run_backtest_scan,
 )
 from backtester import (
+    DEFAULT_BACKTEST_TOP_N,
     DEFAULT_COMMISSION_RATE,
     DEFAULT_ENABLED_GROUPS,
+    DEFAULT_HOLD_DAYS,
     DEFAULT_KEEP_RANK,
+    DEFAULT_LOW_EXPOSURE,
+    DEFAULT_MAX_PER_SECTOR,
     DEFAULT_MAX_FORWARD_RETURN_PCT,
+    DEFAULT_MIN_PRICE_FILTER,
+    DEFAULT_MIN_BREADTH_ABOVE_MA20,
+    DEFAULT_REBALANCE_DAYS,
     DEFAULT_SELL_TAX_RATE,
     DEFAULT_SLIPPAGE_RATE,
     run_backtest,
@@ -48,7 +55,7 @@ def _format_source_usage(source_usage, source_name: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="A-share stock recommendation system MVP")
-    parser.add_argument("--top", type=int, default=DEFAULT_TOP_N, help="Number of top stocks to output")
+    parser.add_argument("--top", type=int, default=None, help="Number of top stocks to output; defaults to 10 for screening and 3 for backtest")
     parser.add_argument("--backtest", action="store_true", help="Run historical backtest from local K-line cache")
     parser.add_argument("--scan-backtests", action="store_true", help="Run a small parameter scan over recent backtest windows")
     parser.add_argument("--scan-regimes", action="store_true", help="Run a regime-based scan over predefined market windows")
@@ -56,8 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refresh-max-stocks", type=int, default=0, help="Optional cap on number of stocks to refresh before backtest; 0 means all")
     parser.add_argument("--start-date", type=str, default="", help="Backtest start date in YYYY-MM-DD")
     parser.add_argument("--end-date", type=str, default="", help="Backtest end date in YYYY-MM-DD")
-    parser.add_argument("--hold-days", type=int, default=5, help="Backtest holding period in trading days")
-    parser.add_argument("--rebalance-days", type=int, default=5, help="Backtest rebalance interval in trading days")
+    parser.add_argument("--hold-days", type=int, default=None, help="Backtest holding period in trading days; defaults to 10")
+    parser.add_argument("--rebalance-days", type=int, default=None, help="Backtest rebalance interval in trading days; defaults to 10")
     parser.add_argument("--min-history", type=int, default=MIN_KLINE_DAYS, help="Minimum history length required for backtest scoring")
     parser.add_argument("--min-candidates", type=int, default=20, help="Minimum number of scored candidates required per backtest period")
     parser.add_argument("--max-periods", type=int, default=0, help="Optional cap on backtest periods; 0 means all")
@@ -101,8 +108,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keep-rank",
         type=int,
-        default=DEFAULT_KEEP_RANK,
-        help="Keep previous holdings if they still rank within this threshold; 0 disables turnover buffer",
+        default=None,
+        help="Keep previous holdings if they still rank within this threshold; defaults to 18, 0 disables turnover buffer",
+    )
+    parser.add_argument(
+        "--max-per-sector",
+        type=int,
+        default=None,
+        help="Limit final picks per sector; defaults to 2, 0 disables sector diversification",
+    )
+    parser.add_argument(
+        "--min-price",
+        type=float,
+        default=None,
+        help="Filter out stocks below this price; defaults to 5.5, 0 disables the price floor",
+    )
+    parser.add_argument(
+        "--min-breadth-ma20",
+        type=float,
+        default=None,
+        help="Reduce exposure when the share of stocks above MA20 is below this threshold; defaults to 0.55",
+    )
+    parser.add_argument(
+        "--low-exposure",
+        type=float,
+        default=None,
+        help="Portfolio exposure to use in weak regime; defaults to 0.6, 0 means full cash",
     )
     parser.add_argument(
         "--commission-rate",
@@ -133,7 +164,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    top_n = max(1, int(args.top))
+    top_n = max(1, int(args.top)) if args.top is not None else DEFAULT_TOP_N
 
     if args.scan_backtests:
         scan_windows = list(DEFAULT_SCAN_WINDOWS) if args.scan_regimes else None
@@ -150,6 +181,10 @@ def main() -> int:
             commission_rate=max(0.0, float(args.commission_rate)),
             slippage_rate=max(0.0, float(args.slippage_rate)),
             sell_tax_rate=max(0.0, float(args.sell_tax_rate)),
+            max_per_sector=DEFAULT_MAX_PER_SECTOR if args.max_per_sector is None else max(0, int(args.max_per_sector)),
+            min_price_filter=DEFAULT_MIN_PRICE_FILTER if args.min_price is None else max(0.0, float(args.min_price)),
+            min_breadth_above_ma20=DEFAULT_MIN_BREADTH_ABOVE_MA20 if args.min_breadth_ma20 is None else max(0.0, float(args.min_breadth_ma20)),
+            low_exposure=DEFAULT_LOW_EXPOSURE if args.low_exposure is None else min(1.0, max(0.0, float(args.low_exposure))),
             max_forward_return_pct=max(0.0, float(args.max_forward_return_pct)),
             enabled_groups=args.groups,
             max_stocks=max(0, int(args.max_stocks)),
@@ -166,6 +201,17 @@ def main() -> int:
         else:
             print(f"Windows: {', '.join(result.get('scan_params', {}).get('start_dates', []))}")
         print(f"Result count: {len(result.get('results', []))}")
+        overall = result.get("cross_window", [])
+        if overall:
+            best = overall[0]
+            print(
+                "Best overall: {label} | avg_ann={avg_ann:.2f}% | worst_ann={worst_ann:.2f}% | worst_dd={worst_dd:.2f}%".format(
+                    label=best.get("label", "N/A"),
+                    avg_ann=float(best.get("average_annualized_net_return_pct", 0.0)),
+                    worst_ann=float(best.get("worst_annualized_net_return_pct", 0.0)),
+                    worst_dd=float(best.get("worst_max_drawdown_pct", 0.0)),
+                )
+            )
         for window_label, items in grouped.items():
             if not items:
                 continue
@@ -189,6 +235,14 @@ def main() -> int:
         return 0
 
     if args.backtest:
+        top_n = max(1, int(args.top)) if args.top is not None else DEFAULT_BACKTEST_TOP_N
+        hold_days = max(1, int(args.hold_days)) if args.hold_days is not None else DEFAULT_HOLD_DAYS
+        rebalance_days = max(1, int(args.rebalance_days)) if args.rebalance_days is not None else DEFAULT_REBALANCE_DAYS
+        keep_rank = max(0, int(args.keep_rank)) if args.keep_rank is not None else DEFAULT_KEEP_RANK
+        max_per_sector = max(0, int(args.max_per_sector)) if args.max_per_sector is not None else DEFAULT_MAX_PER_SECTOR
+        min_price_filter = max(0.0, float(args.min_price)) if args.min_price is not None else DEFAULT_MIN_PRICE_FILTER
+        min_breadth_above_ma20 = max(0.0, float(args.min_breadth_ma20)) if args.min_breadth_ma20 is not None else DEFAULT_MIN_BREADTH_ABOVE_MA20
+        low_exposure = min(1.0, max(0.0, float(args.low_exposure))) if args.low_exposure is not None else DEFAULT_LOW_EXPOSURE
         if args.refresh_history:
             ensure_runtime_directories()
             universe, _ = get_stock_universe_with_source()
@@ -206,15 +260,19 @@ def main() -> int:
             top_n=top_n,
             start_date=args.start_date or None,
             end_date=args.end_date or None,
-            hold_days=max(1, int(args.hold_days)),
-            rebalance_days=max(1, int(args.rebalance_days)),
+            hold_days=hold_days,
+            rebalance_days=rebalance_days,
             min_history=max(2, int(args.min_history)),
             min_candidates=max(top_n, int(args.min_candidates)),
             max_periods=max(0, int(args.max_periods)),
             max_stocks=max(0, int(args.max_stocks)),
             enabled_groups=args.groups,
             max_forward_return_pct=max(0.0, float(args.max_forward_return_pct)),
-            keep_rank=max(0, int(args.keep_rank)),
+            keep_rank=keep_rank,
+            max_per_sector=max_per_sector,
+            min_price_filter=min_price_filter,
+            min_breadth_above_ma20=min_breadth_above_ma20,
+            low_exposure=low_exposure,
             commission_rate=max(0.0, float(args.commission_rate)),
             slippage_rate=max(0.0, float(args.slippage_rate)),
             sell_tax_rate=max(0.0, float(args.sell_tax_rate)),
@@ -233,6 +291,8 @@ def main() -> int:
         print(f"Skipped outlier samples: {summary.get('skipped_outlier_count', 0)}")
         print(f"Avg retained positions: {summary.get('average_retained', 0)}")
         print(f"Avg replacements: {summary.get('average_replacements', 0)}")
+        print(f"Reduced-exposure periods: {summary.get('risk_off_period_count', 0)}")
+        print(f"Avg exposure: {summary.get('average_exposure_pct', 0):.2f}%")
         print(f"Avg turnover: {summary.get('average_turnover_pct', 0):.2f}%")
         print(f"Avg cost drag: {summary.get('average_cost_pct', 0):.2f}%")
         print(f"Strategy avg gross return: {summary.get('average_gross_return_pct', 0):.2f}%")
@@ -250,7 +310,14 @@ def main() -> int:
     fetcher = MarketDataFetcher()
     market_data = fetcher.fetch_universe_data(universe)
     market_data["universe_source"] = universe_source
-    screened_data = screen_market(market_data, top_n=top_n)
+    screened_data = screen_market(
+        market_data,
+        top_n=top_n,
+        max_per_sector=DEFAULT_MAX_PER_SECTOR if args.max_per_sector is None else max(0, int(args.max_per_sector)),
+        min_price_filter=DEFAULT_MIN_PRICE_FILTER if args.min_price is None else max(0.0, float(args.min_price)),
+        min_breadth_above_ma20=DEFAULT_MIN_BREADTH_ABOVE_MA20 if args.min_breadth_ma20 is None else max(0.0, float(args.min_breadth_ma20)),
+        low_exposure=DEFAULT_LOW_EXPOSURE if args.low_exposure is None else min(1.0, max(0.0, float(args.low_exposure))),
+    )
     report_path = generate_report(screened_data, top_n=top_n)
     prefilter = market_data.get("prefilter", {})
     fundamental_pool = screened_data.get("fundamental_pool", {})
@@ -282,7 +349,15 @@ def main() -> int:
     print(f"Source usage: {_format_source_usage(market_data.get('source_usage', {}), 'kline')}")
     print(f"Fetched successfully: {screened_data['fetched_count']}")
     print(f"Qualified candidates: {screened_data['qualified_count']}")
-    print(f"Filtered out (RSI > 80): {screened_data['filtered_count']}")
+    print(f"Filtered out by rules: {screened_data['filtered_count']}")
+    print(
+        "Market breadth above MA20: {value:.2f}%".format(
+            value=float(screened_data.get("market_breadth", {}).get("above_ma20_ratio", 0.0)) * 100.0
+        )
+    )
+    print(f"Suggested exposure: {float(screened_data.get('suggested_exposure', 1.0)) * 100.0:.0f}%")
+    if screened_data.get("risk_off"):
+        print(f"Risk regime: {screened_data.get('risk_regime')} ({screened_data.get('risk_off_reason')})")
     print(f"Failed fetch/scoring: {screened_data['failed_count']}")
     print(f"Report saved to: {report_path}")
     return 0
