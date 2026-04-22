@@ -32,10 +32,12 @@ from backtester import (
     run_backtest,
 )
 from config import DEFAULT_TOP_N, MIN_KLINE_DAYS, ensure_runtime_directories
+from paper_trade import record_paper_trade_run, review_paper_trade_runs, write_paper_trade_review
 from data_fetcher import MarketDataFetcher
 from reporter import generate_report
 from screener import screen_market
 from stock_universe import get_stock_universe_with_source
+from trade_guard import evaluate_screen_quality, write_screen_quality_report
 
 
 def _format_source_usage(source_usage, source_name: str) -> str:
@@ -59,8 +61,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backtest", action="store_true", help="Run historical backtest from local K-line cache")
     parser.add_argument("--scan-backtests", action="store_true", help="Run a small parameter scan over recent backtest windows")
     parser.add_argument("--scan-regimes", action="store_true", help="Run a regime-based scan over predefined market windows")
+    parser.add_argument("--paper-trade-review", action="store_true", help="Review saved paper-trade runs against cached K-line data")
+    parser.add_argument("--allow-partial-data", action="store_true", help="Allow daily screening to continue even when data quality checks fail")
+    parser.add_argument("--skip-paper-log", action="store_true", help="Do not save today's successful screen as a paper-trade snapshot")
     parser.add_argument("--refresh-history", action="store_true", help="Refresh local K-line cache with longest available live history before backtest")
     parser.add_argument("--refresh-max-stocks", type=int, default=0, help="Optional cap on number of stocks to refresh before backtest; 0 means all")
+    parser.add_argument("--paper-hold-days", type=int, default=DEFAULT_HOLD_DAYS, help="Holding days used for paper-trade logging and review; defaults to 10")
+    parser.add_argument("--paper-review-date", type=str, default="", help="Optional paper-trade review cutoff date in YYYY-MM-DD")
     parser.add_argument("--start-date", type=str, default="", help="Backtest start date in YYYY-MM-DD")
     parser.add_argument("--end-date", type=str, default="", help="Backtest end date in YYYY-MM-DD")
     parser.add_argument("--hold-days", type=int, default=None, help="Backtest holding period in trading days; defaults to 10")
@@ -165,6 +172,26 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     top_n = max(1, int(args.top)) if args.top is not None else DEFAULT_TOP_N
+    paper_hold_days = max(1, int(args.paper_hold_days))
+
+    if args.paper_trade_review:
+        ensure_runtime_directories()
+        review = review_paper_trade_runs(
+            hold_days=paper_hold_days,
+            as_of_date=args.paper_review_date or "",
+        )
+        report_path = write_paper_trade_review(review)
+        print("A-share Paper Trade Review")
+        print(f"Review date: {review.get('as_of_date')}")
+        print(f"Hold days: {review.get('hold_days')}")
+        print(f"Runs tracked: {review.get('run_count', 0)}")
+        print(f"Closed runs: {review.get('closed_run_count', 0)}")
+        print(f"Open runs: {review.get('open_run_count', 0)}")
+        print(f"Average run return: {review.get('average_run_return_pct', 0):.2f}%")
+        print(f"Average pick return: {review.get('average_pick_return_pct', 0):.2f}%")
+        print(f"Win rate: {review.get('win_rate_pct', 0):.2f}%")
+        print(f"Report saved to: {report_path}")
+        return 0
 
     if args.scan_backtests:
         scan_windows = list(DEFAULT_SCAN_WINDOWS) if args.scan_regimes else None
@@ -318,7 +345,8 @@ def main() -> int:
         min_breadth_above_ma20=DEFAULT_MIN_BREADTH_ABOVE_MA20 if args.min_breadth_ma20 is None else max(0.0, float(args.min_breadth_ma20)),
         low_exposure=DEFAULT_LOW_EXPOSURE if args.low_exposure is None else min(1.0, max(0.0, float(args.low_exposure))),
     )
-    report_path = generate_report(screened_data, top_n=top_n)
+    quality = evaluate_screen_quality(universe, market_data, screened_data, top_n=top_n)
+    quality_report_path = write_screen_quality_report(quality)
     prefilter = market_data.get("prefilter", {})
     fundamental_pool = screened_data.get("fundamental_pool", {})
 
@@ -355,11 +383,33 @@ def main() -> int:
             value=float(screened_data.get("market_breadth", {}).get("above_ma20_ratio", 0.0)) * 100.0
         )
     )
+    print(f"Data quality gate: {'pass' if quality.get('passed') else 'fail'}")
     print(f"Suggested exposure: {float(screened_data.get('suggested_exposure', 1.0)) * 100.0:.0f}%")
     if screened_data.get("risk_off"):
         print(f"Risk regime: {screened_data.get('risk_regime')} ({screened_data.get('risk_off_reason')})")
     print(f"Failed fetch/scoring: {screened_data['failed_count']}")
+    print(f"Quality report saved to: {quality_report_path}")
+
+    if not quality.get("passed") and not args.allow_partial_data:
+        for reason in quality.get("reasons", []):
+            print(f"Quality issue: {reason}")
+        print("Daily report blocked due to data quality gate.")
+        return 2
+
+    report_path = generate_report(screened_data, top_n=top_n)
+    paper_trade_path = None
+    if quality.get("passed") and not args.skip_paper_log:
+        paper_trade_path = record_paper_trade_run(
+            screened_data,
+            top_n=top_n,
+            report_path=report_path,
+            quality_report_path=quality_report_path,
+            hold_days=paper_hold_days,
+        )
+
     print(f"Report saved to: {report_path}")
+    if paper_trade_path is not None:
+        print(f"Paper trade log saved to: {paper_trade_path}")
     return 0
 
 

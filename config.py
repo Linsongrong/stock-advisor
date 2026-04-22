@@ -7,6 +7,9 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 REPORTS_DIR = BASE_DIR / "reports"
+QUALITY_REPORTS_DIR = REPORTS_DIR / "quality"
+PAPER_TRADES_DIR = REPORTS_DIR / "paper_trades"
+PAPER_TRADE_REVIEWS_DIR = PAPER_TRADES_DIR / "reviews"
 QUOTE_CACHE_DIR = DATA_DIR / "quotes"
 KLINE_CACHE_DIR = DATA_DIR / "kline"
 UNIVERSE_CACHE_PATH = DATA_DIR / "universe_cache.json"
@@ -96,9 +99,22 @@ DEFAULT_MAX_PER_SECTOR = 2
 DEFAULT_MIN_PRICE_FILTER = 5.5
 DEFAULT_MIN_BREADTH_ABOVE_MA20 = 0.55
 DEFAULT_LOW_EXPOSURE = 0.6
+MIN_SCREEN_UNIVERSE_SIZE = 2500
+MIN_PREFILTER_SEED_RATIO = 0.95
+MIN_FETCH_SUCCESS_RATIO = 0.95
+MAX_FAILURE_RATIO = 0.02
+MIN_QUALIFIED_COUNT = 30
 
 
 def ensure_runtime_directories() -> None:
     """Create data and report directories used by the application."""
-    for directory in (DATA_DIR, REPORTS_DIR, QUOTE_CACHE_DIR, KLINE_CACHE_DIR):
+    for directory in (
+        DATA_DIR,
+        REPORTS_DIR,
+        QUALITY_REPORTS_DIR,
+        PAPER_TRADES_DIR,
+        PAPER_TRADE_REVIEWS_DIR,
+        QUOTE_CACHE_DIR,
+        KLINE_CACHE_DIR,
+    ):
         directory.mkdir(parents=True, exist_ok=True)

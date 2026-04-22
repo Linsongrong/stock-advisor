@@ -98,6 +98,8 @@
 - 默认会根据市场温度自动降仓：如果“站上 MA20 的股票占比”低于 `55%`，则建议把仓位降到 `60%`。
 - 单只股票抓取失败或打分失败不会中断整次运行。
 - 基本面或情绪数据缺失时，会尽量退回到中性行为而不是直接报错退出。
+- 默认启用数据质量闸门：如果股票池规模、预筛覆盖率、抓取完成率或源状态不达标，当天会直接停止出推荐，并写出质量报告。
+- 通过数据质量闸门的日筛结果会自动写入模拟跟踪记录，方便后续做 2-4 周连续观察。
 
 ### 缓存文件
 
@@ -129,6 +131,7 @@ pip install -r requirements.txt
 ```bash
 python run.py
 python run.py --top 5
+python run.py --allow-partial-data
 python run.py --top 5 --max-per-sector 1
 python run.py --top 5 --min-price 8
 python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0.6
@@ -151,6 +154,8 @@ python run.py --backtest --max-forward-return-pct 50
 python run.py --scan-backtests
 python run.py --scan-backtests --scan-regimes
 python run.py --scan-backtests --scan-start-dates 2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
+python run.py --paper-trade-review
+python run.py --paper-trade-review --paper-hold-days 5
 ```
 
 运行回归测试：
@@ -162,6 +167,9 @@ python -m unittest discover -s tests -v
 ### 输出内容
 
 - 报告：`reports/YYYY-MM-DD.md`
+- 质量检查：`reports/quality/YYYY-MM-DD.md`
+- 模拟跟踪：`reports/paper_trades/YYYY-MM-DD.json`
+- 模拟回看：`reports/paper_trades/reviews/*.md`
 - 图表：`reports/YYYY-MM-DD_01_CODE.png`、`reports/YYYY-MM-DD_02_CODE.png`、`reports/YYYY-MM-DD_03_CODE.png`
 - 回测报告：`reports/backtests/*.md`
 - 扫描报告：`reports/backtests/sweeps/*.md`
@@ -182,12 +190,13 @@ python -m unittest discover -s tests -v
 - `--max-forward-return-pct` 会过滤掉异常大的前瞻收益样本，降低复权口径或极端事件对长期回测的污染
 - `--scan-backtests` 会批量比较不同参数组合，并输出分窗口报告和跨窗口总榜
 - `--scan-regimes` 会使用内置的市场阶段窗口做扫描，例如 `2020-2022`、`2023-至今`
+- `--paper-trade-review` 会回看已经记录的模拟组合，并按持有天数统计表现
 
 ### 运行说明
 
 - 全市场运行可能需要一定时间，因为行情、K 线、基本面和二阶段情绪都依赖远程请求。
 - 情绪面只对第一轮 Top 30 候选股抓取，这是为了控制总耗时。
-- 系统设计目标是“尽量降级不崩溃”，即部分抓取失败也应尽可能产出报告。
+- 系统默认会先过数据质量闸门，只有闸门通过才会产出日筛报告；如需强行继续，可手动加 `--allow-partial-data`。
 - 回测当前默认使用本地 K 线缓存，并默认启用一组更平衡的参数：`Top 3`、`10/10` 持有与换仓节奏、`keep-rank=18`、`max-per-sector=2`、`min-price=5.5`、`min-breadth-ma20=0.55`、`low-exposure=0.6`。
 - 如果更重视回撤而不是收益峰值，可以把 `--low-exposure 0` 作为更保守的模式。
 - 参数扫描默认聚焦 `2020` 之后，并会复用历史打分缓存，比逐组完全重算更快。
@@ -323,6 +332,7 @@ Run the screener:
 ```bash
 python run.py
 python run.py --top 5
+python run.py --allow-partial-data
 python run.py --top 5 --max-per-sector 1
 python run.py --top 5 --min-price 8
 python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0.6
@@ -345,6 +355,8 @@ python run.py --backtest --max-forward-return-pct 50
 python run.py --scan-backtests
 python run.py --scan-backtests --scan-regimes
 python run.py --scan-backtests --scan-start-dates 2020-01-01 --scan-hold-options 5,10,20 --scan-rebalance-options 5,10,20
+python run.py --paper-trade-review
+python run.py --paper-trade-review --paper-hold-days 5
 ```
 
 Run regression tests:
@@ -356,6 +368,9 @@ python -m unittest discover -s tests -v
 ### Output
 
 - Report Markdown: `reports/YYYY-MM-DD.md`
+- Quality report: `reports/quality/YYYY-MM-DD.md`
+- Paper-trade snapshot: `reports/paper_trades/YYYY-MM-DD.json`
+- Paper-trade review: `reports/paper_trades/reviews/*.md`
 - Top chart images: `reports/YYYY-MM-DD_01_CODE.png`, `reports/YYYY-MM-DD_02_CODE.png`, `reports/YYYY-MM-DD_03_CODE.png`
 - Backtest reports: `reports/backtests/*.md`
 - Scan reports: `reports/backtests/sweeps/*.md`
@@ -376,11 +391,12 @@ The report includes:
 - `--max-forward-return-pct` filters abnormally large forward-return samples that can distort long-horizon backtests
 - `--scan-backtests` runs a parameter scan and writes both per-window tables and a cross-window ranking
 - `--scan-regimes` uses built-in windows such as `2020-2022` and `2023-now`
+- `--paper-trade-review` reviews saved paper-trade snapshots using cached K-line data
 
 ### Runtime Notes
 
 - The full market run can take noticeable time because quote, K-line, fundamentals, and second-pass sentiment are all fetched remotely.
 - Sentiment is intentionally delayed until the top 30 pass 1 candidates to reduce total runtime.
-- The project is designed to degrade gracefully: partial failures should not stop report generation.
+- A strict data-quality gate now blocks the daily report when the universe size, prefilter coverage, fetch completion, or source health fall below the configured minimums. Use `--allow-partial-data` only when you explicitly want to inspect a compromised run.
 - Backtests currently use local K-line cache and a more balanced default setup: `Top 3`, `10/10` rebalance cadence, `keep-rank=18`, `max-per-sector=2`, `min-price=5.5`, `min-breadth-ma20=0.55`, and `low-exposure=0.6`.
 - Parameter scans now focus on `2020+` by default and reuse cached scores to reduce repeated work.
