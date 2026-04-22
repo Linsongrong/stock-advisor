@@ -3,9 +3,10 @@
 
 import json
 import math
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -20,12 +21,15 @@ from config import (
 )
 
 
-UNIVERSE_CACHE_VERSION = 3
-AUTO_UNIVERSE_PAGE_SIZE = 800
+UNIVERSE_CACHE_VERSION = 5
+AUTO_UNIVERSE_PAGE_SIZE = 100
 AUTO_UNIVERSE_MARKET_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
+MIN_COMPLETE_UNIVERSE_SIZE = 2500
+MAIN_BOARD_CODE_PREFIXES = ("000", "001", "002", "003", "600", "601", "603", "605")
 SINA_UNIVERSE_NODE = "hs_a"
 SINA_UNIVERSE_PAGE_SIZE = 1000
 SINA_ALLOWED_SYMBOL_PREFIXES = ("sh", "sz")
+ST_NAME_RE = re.compile(r"^(?:\*?ST|S\*ST|SST|PT)", re.IGNORECASE)
 
 
 SECTOR_POOLS: Dict[str, List[Tuple[str, str]]] = {
@@ -436,6 +440,58 @@ def _build_sina_quote_snapshot(item: Dict[str, str], snapshot_saved_at: str) -> 
     }
 
 
+def _normalize_name(name: str) -> str:
+    return str(name or "").replace(" ", "").strip()
+
+
+def _is_st_stock(name: str) -> bool:
+    normalized = _normalize_name(name).upper()
+    return bool(normalized and ST_NAME_RE.match(normalized))
+
+
+def _is_excluded_stock(code: str, name: str) -> bool:
+    normalized_code = str(code or "").strip()
+    if not normalized_code or len(normalized_code) != 6:
+        return True
+    if not normalized_code.startswith(MAIN_BOARD_CODE_PREFIXES):
+        return True
+    if _is_st_stock(name):
+        return True
+    return False
+
+
+def _finalize_universe(stocks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    deduped: List[Dict[str, str]] = []
+    seen = set()
+    for item in stocks:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if _is_excluded_stock(code, name) or code in seen:
+            continue
+        seen.add(code)
+        deduped.append(
+            {
+                "code": code,
+                "name": name,
+                "sector": str(item.get("sector", "")).strip() or "auto_broad_unknown",
+                **(
+                    {"quote_snapshot": item["quote_snapshot"]}
+                    if isinstance(item.get("quote_snapshot"), dict)
+                    else {}
+                ),
+                **(
+                    {"quote_snapshot_saved_at": str(item.get("quote_snapshot_saved_at", "")).strip()}
+                    if item.get("quote_snapshot_saved_at")
+                    else {}
+                ),
+            }
+        )
+    deduped.sort(key=lambda entry: entry["code"])
+    return deduped
+
+
 def _normalize_eastmoney_items(raw_items) -> List[Dict[str, str]]:
     if isinstance(raw_items, dict):
         items = list(raw_items.values())
@@ -452,11 +508,10 @@ def _normalize_eastmoney_items(raw_items) -> List[Dict[str, str]]:
         code = str(item.get("f12", "")).strip()
         name = str(item.get("f14", "")).strip()
         sector = str(item.get("f100", "")).strip() or "auto_broad_eastmoney"
-        if code and code not in seen and len(code) == 6:
+        if code and code not in seen and not _is_excluded_stock(code, name):
             seen.add(code)
             stocks.append({"code": code, "name": name, "sector": sector})
-    stocks.sort(key=lambda entry: entry["code"])
-    return stocks
+    return _finalize_universe(stocks)
 
 
 def _get_hardcoded_sector_map() -> Dict[str, str]:
@@ -471,25 +526,51 @@ def _fetch_eastmoney_universe() -> List[Dict[str, str]]:
     """Fetch a broad A-share universe with Eastmoney industry metadata."""
     headers = {"User-Agent": USER_AGENT}
     url = "https://push2.eastmoney.com/api/qt/clist/get"
-    params = {
-        "pn": 1,
-        "pz": AUTO_UNIVERSE_PAGE_SIZE,
-        "fs": AUTO_UNIVERSE_MARKET_FILTER,
-        "fields": "f12,f14,f100",
-    }
     session = _build_retry_session()
+    stocks: List[Dict[str, str]] = []
+    expected_total = 0
+    max_pages: Optional[int] = None
 
     try:
-        resp = session.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 200:
+        page = 1
+        while True:
+            params = {
+                "pn": page,
+                "pz": AUTO_UNIVERSE_PAGE_SIZE,
+                "po": 1,
+                "np": 1,
+                "fltt": 2,
+                "invt": 2,
+                "fid": "f12",
+                "fs": AUTO_UNIVERSE_MARKET_FILTER,
+                "fields": "f12,f14,f100",
+            }
+            resp = session.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+            if resp.status_code != 200:
+                return []
             data = resp.json()
-            stocks = _normalize_eastmoney_items(data.get("data", {}).get("diff", []))
-            if stocks:
-                return stocks
-    except Exception:
-        pass
+            data_block = data.get("data", {}) if isinstance(data, dict) else {}
+            raw_diff = data_block.get("diff", [])
+            page_stocks = _normalize_eastmoney_items(raw_diff)
+            if not page_stocks:
+                break
+            stocks.extend(page_stocks)
 
-    return []
+            if expected_total <= 0:
+                expected_total = _safe_int(data_block.get("total"))
+                if expected_total > 0:
+                    max_pages = max(1, math.ceil(expected_total / AUTO_UNIVERSE_PAGE_SIZE))
+
+            page += 1
+            if max_pages is not None and page > max_pages:
+                break
+    except Exception:
+        return []
+
+    finalized = _finalize_universe(stocks)
+    if len(finalized) < MIN_COMPLETE_UNIVERSE_SIZE:
+        return []
+    return finalized
 
 
 def _fetch_sina_universe() -> List[Dict[str, str]]:
@@ -549,7 +630,7 @@ def _fetch_sina_universe() -> List[Dict[str, str]]:
             name = str(item.get("name", "")).strip()
             if not symbol.startswith(SINA_ALLOWED_SYMBOL_PREFIXES):
                 continue
-            if code and code not in seen and len(code) == 6:
+            if code and code not in seen and not _is_excluded_stock(code, name):
                 seen.add(code)
                 stocks.append(
                     {
@@ -561,8 +642,10 @@ def _fetch_sina_universe() -> List[Dict[str, str]]:
                     }
                 )
 
-    stocks.sort(key=lambda item: item["code"])
-    return stocks
+    finalized = _finalize_universe(stocks)
+    if len(finalized) < MIN_COMPLETE_UNIVERSE_SIZE:
+        return []
+    return finalized
 
 
 def _load_universe_cache_payload() -> Tuple[List[Dict[str, str]], str, str]:
@@ -614,12 +697,23 @@ def get_stock_universe_with_source() -> Tuple[List[Dict[str, str]], str]:
     """Return stock universe plus the source label used for this run."""
     cached, cached_source, cached_saved_at = _load_universe_cache_payload()
     if cached:
-        if cached_source == "sina_broad_market" and not _snapshot_cache_is_fresh(cached_saved_at):
+        cache_is_complete = len(cached) >= MIN_COMPLETE_UNIVERSE_SIZE
+        if cached_source == "sina_broad_market" and (not _snapshot_cache_is_fresh(cached_saved_at) or not cache_is_complete):
             refreshed = _fetch_sina_universe()
             if refreshed:
                 _save_universe_cache(refreshed, cached_source)
                 return refreshed, f"{cached_source}_live"
-        return cached, f"{cached_source or 'auto'}_cache"
+        elif cached_source == "eastmoney_broad_market" and not cache_is_complete:
+            fetched = _fetch_eastmoney_universe()
+            if fetched:
+                _save_universe_cache(fetched, cached_source)
+                return fetched, f"{cached_source}_live"
+            refreshed = _fetch_sina_universe()
+            if refreshed:
+                _save_universe_cache(refreshed, "sina_broad_market")
+                return refreshed, "sina_broad_market_live"
+        if cache_is_complete or cached_source not in {"eastmoney_broad_market", "sina_broad_market"}:
+            return cached, f"{cached_source or 'auto'}_cache"
 
     fetched = _fetch_eastmoney_universe()
     if fetched:
@@ -647,11 +741,11 @@ def _get_hardcoded_universe() -> List[Dict[str, str]]:
     universe: List[Dict[str, str]] = []
     for sector, stocks in SECTOR_POOLS.items():
         for code, name in stocks:
-            if code in seen:
+            if code in seen or _is_excluded_stock(code, name):
                 continue
             seen.add(code)
             universe.append({"code": code, "name": name, "sector": sector})
-    return universe
+    return _finalize_universe(universe)
 
 
 # Keep old function name for compatibility
