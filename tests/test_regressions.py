@@ -10,7 +10,7 @@ from unittest import mock
 import config
 import factors.fundamental as fundamental
 import factors.sentiment as sentiment
-from scorer import score_stock
+from scorer import compute_selection_adjustment, score_stock
 
 
 BULLISH_TITLE = "\u516c\u53f8\u8ba2\u5355\u589e\u957f\uff0c\u7a81\u7834\u65b0\u9ad8"
@@ -217,7 +217,42 @@ class ScoreSnapshotTests(unittest.TestCase):
         self.assertAlmostEqual(result["fundamental_score"], 90.0, places=2)
         self.assertAlmostEqual(result["sentiment_score"], 68.0, places=2)
         self.assertAlmostEqual(result["total_score"], 77.26, places=2)
+        self.assertNotEqual(result["selection_adjustment"], 0.0)
+        self.assertAlmostEqual(result["selection_score"], result["total_score"] + result["selection_adjustment"], places=2)
         self.assertAlmostEqual(result["technical_indicators"]["rsi"], 75.89, places=2)
+
+    def test_selection_adjustment_rewards_stable_setups_and_penalizes_hot_moves(self) -> None:
+        stable = {
+            "price": 10.3,
+            "change_pct": 1.5,
+            "technical_indicators": {
+                "rsi": 56.0,
+                "ma20": 10.0,
+                "ma60": 9.6,
+                "breakout_level": 10.1,
+                "momentum_20d_pct": 6.0,
+                "momentum_60d_pct": 12.0,
+                "ma20_slope_pct": 1.2,
+                "ma60_slope_pct": 0.5,
+            },
+        }
+        hot = {
+            "price": 13.0,
+            "change_pct": 8.5,
+            "technical_indicators": {
+                "rsi": 79.0,
+                "ma20": 10.0,
+                "ma60": 9.8,
+                "breakout_level": 11.2,
+                "momentum_20d_pct": 18.0,
+                "momentum_60d_pct": -6.0,
+                "ma20_slope_pct": 3.0,
+                "ma60_slope_pct": 1.2,
+            },
+        }
+
+        self.assertGreater(compute_selection_adjustment(stable), 0.0)
+        self.assertLess(compute_selection_adjustment(hot), 0.0)
 
 
 if __name__ == "__main__":

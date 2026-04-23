@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """Tests for the historical backtesting helpers."""
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import backtester
@@ -114,6 +117,70 @@ class BacktesterHelperTests(unittest.TestCase):
 
         self.assertEqual([item["code"] for item in selected], ["A1", "B1"])
 
+    def test_select_with_constraints_keeps_previous_name_when_score_gap_is_small(self):
+        ranked = [
+            {"code": "N1", "sector": "alpha", "score": 95.0, "capital_score": 95.0, "technical_score": 95.0},
+            {"code": "N2", "sector": "beta", "score": 94.0, "capital_score": 94.0, "technical_score": 94.0},
+            {"code": "OLD", "sector": "gamma", "score": 89.5, "capital_score": 89.5, "technical_score": 89.5},
+            {"code": "N3", "sector": "delta", "score": 89.0, "capital_score": 89.0, "technical_score": 89.0},
+        ]
+
+        selected = backtester._select_with_constraints(
+            ranked,
+            top_n=2,
+            previous_selected_codes=["OLD"],
+            keep_rank=2,
+            max_per_sector=2,
+            keep_score_gap=6.0,
+        )
+
+        self.assertEqual([item["code"] for item in selected], ["OLD", "N1"])
+
+    def test_select_with_constraints_caps_new_replacements(self):
+        ranked = [
+            {"code": "N1", "sector": "alpha", "score": 99.0, "capital_score": 99.0, "technical_score": 99.0},
+            {"code": "N2", "sector": "beta", "score": 98.0, "capital_score": 98.0, "technical_score": 98.0},
+            {"code": "OLD1", "sector": "gamma", "score": 92.0, "capital_score": 92.0, "technical_score": 92.0},
+            {"code": "OLD2", "sector": "delta", "score": 88.0, "capital_score": 88.0, "technical_score": 88.0},
+            {"code": "OLD3", "sector": "epsilon", "score": 80.0, "capital_score": 80.0, "technical_score": 80.0},
+        ]
+
+        selected = backtester._select_with_constraints(
+            ranked,
+            top_n=3,
+            previous_selected_codes=["OLD1", "OLD2", "OLD3"],
+            keep_rank=2,
+            max_per_sector=2,
+            keep_score_gap=6.0,
+            max_replacements=1,
+        )
+
+        self.assertEqual(sum(1 for item in selected if item["code"].startswith("N")), 1)
+
+    def test_load_backtest_histories_filters_codes_outside_current_universe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kline_dir = Path(temp_dir) / "kline"
+            quote_dir = Path(temp_dir) / "quotes"
+            kline_dir.mkdir()
+            quote_dir.mkdir()
+            payload = {
+                "saved_at": "2026-04-22T00:00:00",
+                "data": _build_rows(10.0, [0.01, 0.02, -0.01], 100000),
+            }
+            (kline_dir / "000001.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            (kline_dir / "300001.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            with mock.patch.object(backtester, "KLINE_CACHE_DIR", kline_dir), mock.patch.object(
+                backtester, "QUOTE_CACHE_DIR", quote_dir
+            ), mock.patch.object(
+                backtester,
+                "_load_universe_cache",
+                return_value=[{"code": "000001", "name": "平安银行", "sector": "银行"}],
+            ):
+                histories = backtester.load_backtest_histories()
+
+        self.assertEqual(set(histories.keys()), {"000001"})
+
 
 class BacktesterRunTests(unittest.TestCase):
     def test_run_backtest_on_histories_produces_periods_and_prefers_stronger_trend(self):
@@ -148,10 +215,13 @@ class BacktesterRunTests(unittest.TestCase):
             min_history=5,
             min_candidates=1,
             enabled_groups=("capital", "technical"),
+            eligible_universe_size=10,
         )
 
         self.assertGreater(result["summary"]["period_count"], 0)
         self.assertEqual(result["summary"]["universe_size"], 3)
+        self.assertEqual(result["summary"]["eligible_universe_size"], 10)
+        self.assertEqual(result["summary"]["history_coverage_pct"], 30.0)
         self.assertEqual(result["periods"][0]["selected_count"], 1)
         self.assertEqual(result["periods"][0]["picks"][0]["code"], "AAA001")
         self.assertGreaterEqual(result["summary"]["average_turnover_pct"], 0.0)

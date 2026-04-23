@@ -139,7 +139,7 @@ def _build_table_rows(stocks: List[Dict[str, Any]]) -> List[str]:
             technical=stock["technical_score"],
             fundamental=stock.get("fundamental_score", 0),
             sentiment=stock.get("sentiment_score", 0),
-            total=stock["total_score"],
+            total=stock.get("selection_score", stock["total_score"]),
         )
         lines.append(row)
     return lines

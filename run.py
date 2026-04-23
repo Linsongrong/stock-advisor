@@ -33,6 +33,7 @@ from backtester import (
 )
 from config import DEFAULT_TOP_N, MIN_KLINE_DAYS, ensure_runtime_directories
 from paper_trade import record_paper_trade_run, review_paper_trade_runs, write_paper_trade_review
+from trade_plan import evaluate_strategy_health, write_daily_trade_plan, write_strategy_health_report
 from data_fetcher import MarketDataFetcher
 from reporter import generate_report
 from screener import screen_market
@@ -181,6 +182,8 @@ def main() -> int:
             as_of_date=args.paper_review_date or "",
         )
         report_path = write_paper_trade_review(review)
+        health = evaluate_strategy_health(review)
+        health_report_path = write_strategy_health_report(health)
         print("A-share Paper Trade Review")
         print(f"Review date: {review.get('as_of_date')}")
         print(f"Hold days: {review.get('hold_days')}")
@@ -190,7 +193,9 @@ def main() -> int:
         print(f"Average run return: {review.get('average_run_return_pct', 0):.2f}%")
         print(f"Average pick return: {review.get('average_pick_return_pct', 0):.2f}%")
         print(f"Win rate: {review.get('win_rate_pct', 0):.2f}%")
+        print(f"Strategy health: {health.get('status')} ({health.get('deployment_mode')})")
         print(f"Report saved to: {report_path}")
+        print(f"Health report saved to: {health_report_path}")
         return 0
 
     if args.scan_backtests:
@@ -406,10 +411,26 @@ def main() -> int:
             quality_report_path=quality_report_path,
             hold_days=paper_hold_days,
         )
+    paper_review = review_paper_trade_runs(
+        hold_days=paper_hold_days,
+        as_of_date=screened_data.get("report_date", ""),
+    )
+    health = evaluate_strategy_health(paper_review)
+    health_report_path = write_strategy_health_report(health)
+    trade_plan_path = write_daily_trade_plan(
+        screened_data,
+        quality=quality,
+        health=health,
+        top_n=top_n,
+        hold_days=paper_hold_days,
+    )
 
     print(f"Report saved to: {report_path}")
     if paper_trade_path is not None:
         print(f"Paper trade log saved to: {paper_trade_path}")
+    print(f"Strategy health: {health.get('status')} ({health.get('deployment_mode')})")
+    print(f"Health report saved to: {health_report_path}")
+    print(f"Trade plan saved to: {trade_plan_path}")
     return 0
 
 

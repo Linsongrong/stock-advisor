@@ -53,7 +53,7 @@ def record_paper_trade_run(
                 "name": item.get("name", ""),
                 "sector": item.get("sector", ""),
                 "entry_price": round(float(item.get("price", 0.0) or 0.0), 4),
-                "total_score": round(float(item.get("total_score", 0.0) or 0.0), 4),
+                "total_score": round(float(item.get("selection_score", item.get("total_score", 0.0)) or 0.0), 4),
             }
             for index, item in enumerate(top_stocks, start=1)
         ],

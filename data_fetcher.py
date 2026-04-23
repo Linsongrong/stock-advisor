@@ -515,7 +515,15 @@ class MarketDataFetcher:
             try:
                 live_data = self.fetch_kline_live(code, prefer_long_history=prefer_long_history)
                 if live_data:
-                    if prefer_long_history:
+                    cached_entry = self._get_kline_cache_entry(code, fresh_only=False)
+                    cached_rows = cached_entry.get("data") if isinstance(cached_entry, dict) else None
+                    should_write_cache = bool(prefer_long_history)
+                    if not should_write_cache:
+                        if not isinstance(cached_rows, list):
+                            should_write_cache = True
+                        else:
+                            should_write_cache = len(live_data) >= len(cached_rows)
+                    if should_write_cache:
                         self._write_cache(KLINE_CACHE_DIR / f"{code}.json", live_data)
                     return live_data, self._source_meta("live", cache_is_fresh=True)
             except requests.RequestException:

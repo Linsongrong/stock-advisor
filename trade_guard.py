@@ -44,6 +44,14 @@ def evaluate_screen_quality(
 
     quote_usage = source_usage.get("quote", {}) if isinstance(source_usage, dict) else {}
     kline_usage = source_usage.get("kline", {}) if isinstance(source_usage, dict) else {}
+    quote_success_count = sum(
+        int(quote_usage.get(key, 0) or 0)
+        for key in ("live", "universe_snapshot", "cache_fresh", "cache_stale", "derived_kline")
+    )
+    kline_success_count = sum(
+        int(kline_usage.get(key, 0) or 0)
+        for key in ("live", "universe_snapshot", "cache_fresh", "cache_stale", "derived_kline")
+    )
 
     seed_ratio = _ratio(seed_quote_count, universe_size)
     fetch_ratio = _ratio(fetched_count, selected_count)
@@ -63,10 +71,10 @@ def evaluate_screen_quality(
                 expected=MIN_SCREEN_UNIVERSE_SIZE,
             )
         )
-    if not bool(source_status.get("quote", False)):
-        reasons.append("行情源探测失败")
-    if not bool(source_status.get("kline", False)):
-        reasons.append("日线源探测失败")
+    if not bool(source_status.get("quote", False)) and quote_success_count <= 0:
+        reasons.append("行情源探测失败且没有可用行情")
+    if not bool(source_status.get("kline", False)) and kline_success_count <= 0:
+        reasons.append("日线源探测失败且没有可用日线")
     if seed_ratio < MIN_PREFILTER_SEED_RATIO:
         reasons.append(
             "预筛行情覆盖率只有 {actual:.2%}，低于要求 {expected:.2%}".format(
@@ -125,6 +133,8 @@ def evaluate_screen_quality(
             "quote_stale": quote_stale,
             "kline_stale": kline_stale,
             "quote_derived": quote_derived,
+            "quote_success_count": quote_success_count,
+            "kline_success_count": kline_success_count,
         },
     }
 

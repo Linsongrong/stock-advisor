@@ -20,6 +20,15 @@ def _series_mean(values: np.ndarray, window: int) -> float:
     return float(np.mean(usable))
 
 
+def _lookback_return(values: np.ndarray, lookback: int) -> float:
+    if values.size <= lookback:
+        return 0.0
+    base = float(values[-(lookback + 1)])
+    if base <= 0:
+        return 0.0
+    return (float(values[-1]) / base - 1.0) * 100.0
+
+
 def _ema(values: np.ndarray, period: int) -> np.ndarray:
     if values.size == 0:
         return np.array([])
@@ -148,6 +157,7 @@ def calculate_technical_factors(
         breakout = 20.0
 
     previous_ma20 = _series_mean(adjusted_closes[:-1], 20) if adjusted_closes.size > 1 else ma20
+    previous_ma60 = _series_mean(adjusted_closes[:-1], 60) if adjusted_closes.size > 1 else ma60
     if current_close > ma20 and ma20 >= previous_ma20:
         trend_strength = 100.0
     elif current_close > ma20:
@@ -156,6 +166,11 @@ def calculate_technical_factors(
         trend_strength = 55.0
     else:
         trend_strength = 20.0
+
+    momentum_20d_pct = _lookback_return(adjusted_closes, 20)
+    momentum_60d_pct = _lookback_return(adjusted_closes, 60)
+    ma20_slope_pct = ((ma20 / previous_ma20) - 1.0) * 100.0 if previous_ma20 > 0 else 0.0
+    ma60_slope_pct = ((ma60 / previous_ma60) - 1.0) * 100.0 if previous_ma60 > 0 else 0.0
 
     return {
         "factors": {
@@ -171,10 +186,15 @@ def calculate_technical_factors(
             "macd_line": round(macd_now, 4),
             "signal_line": round(signal_now, 4),
             "macd_hist": round(hist_now, 4),
+            "macd_hist_delta": round(hist_now - hist_prev, 4),
             "ma5": round(ma5, 4),
             "ma10": round(ma10, 4),
             "ma20": round(ma20, 4),
             "ma60": round(ma60, 4),
+            "momentum_20d_pct": round(momentum_20d_pct, 2),
+            "momentum_60d_pct": round(momentum_60d_pct, 2),
+            "ma20_slope_pct": round(ma20_slope_pct, 2),
+            "ma60_slope_pct": round(ma60_slope_pct, 2),
             "breakout_level": round(previous_high, 4),
             "current_volume": round(current_volume, 2),
             "avg5_volume": round(avg5_volume, 2),

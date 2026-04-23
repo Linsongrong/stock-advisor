@@ -16,6 +16,10 @@ from factors.sentiment import batch_fetch_sentiment
 from scorer import score_stock
 
 
+def _selection_value(item: Dict[str, Any]) -> float:
+    return float(item.get("selection_score", item.get("total_score", 0.0)) or 0.0)
+
+
 def _select_top_with_sector_limit(
     ranked: List[Dict[str, Any]],
     top_n: int,
@@ -144,7 +148,7 @@ def screen_market(
                 continue
             pass1_results.append(result)
 
-        pass1_results.sort(key=lambda item: item["total_score"], reverse=True)
+        pass1_results.sort(key=lambda item: (_selection_value(item), item["capital_score"], item["technical_score"]), reverse=True)
         sentiment_map = {}
         if fetch_sentiment:
             sentiment_codes = [s["code"] for s in pass1_results[:30]]
@@ -168,7 +172,7 @@ def screen_market(
                 result = rescored
             final_ranked.append(result)
 
-        final_ranked.sort(key=lambda item: (item["total_score"], item["capital_score"], item["technical_score"]), reverse=True)
+        final_ranked.sort(key=lambda item: (_selection_value(item), item["capital_score"], item["technical_score"]), reverse=True)
         filtered.sort(key=lambda item: item.get("technical_indicators", {}).get("rsi", 0.0), reverse=True)
         market_breadth = _compute_market_breadth(breadth_results, min_price_filter=min_price_filter)
         suggested_exposure = _suggest_exposure(
@@ -241,7 +245,7 @@ def screen_market(
             continue
         pass0_results.append(result)
 
-    pass0_results.sort(key=lambda item: item["total_score"], reverse=True)
+    pass0_results.sort(key=lambda item: (_selection_value(item), item["capital_score"], item["technical_score"]), reverse=True)
 
     # Pass 1: fetch fundamentals only for the top pre-ranked candidate pool
     if FUNDAMENTAL_PREFETCH_POOL > 0:
@@ -269,7 +273,7 @@ def screen_market(
             rescored = result
         pass1_results.append(rescored)
 
-    pass1_results.sort(key=lambda item: item["total_score"], reverse=True)
+    pass1_results.sort(key=lambda item: (_selection_value(item), item["capital_score"], item["technical_score"]), reverse=True)
 
     # Pass 2: Fetch sentiment only for the top 30 candidates after fundamentals
     sentiment_map = {}
@@ -296,7 +300,7 @@ def screen_market(
         final_ranked.append(result)
 
     # Final sort
-    final_ranked.sort(key=lambda item: (item["total_score"], item["capital_score"], item["technical_score"]), reverse=True)
+    final_ranked.sort(key=lambda item: (_selection_value(item), item["capital_score"], item["technical_score"]), reverse=True)
     filtered.sort(key=lambda item: item.get("technical_indicators", {}).get("rsi", 0.0), reverse=True)
     market_breadth = _compute_market_breadth(breadth_results, min_price_filter=min_price_filter)
     suggested_exposure = _suggest_exposure(

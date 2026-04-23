@@ -31,7 +31,9 @@ ALL_GROUPS = ("capital", "technical", "fundamental", "sentiment")
 DEFAULT_COMMISSION_RATE = 0.0003
 DEFAULT_SLIPPAGE_RATE = 0.0005
 DEFAULT_SELL_TAX_RATE = 0.0005
-DEFAULT_KEEP_RANK = 18
+DEFAULT_KEEP_RANK = 48
+DEFAULT_KEEP_SCORE_GAP = 6.0
+DEFAULT_MAX_REPLACEMENTS = 1
 DEFAULT_MAX_FORWARD_RETURN_PCT = 50.0
 _CACHE_MISS = object()
 
@@ -76,9 +78,19 @@ def _load_stock_metadata() -> Dict[str, Dict[str, str]]:
     return metadata
 
 
+def _load_backtest_universe_codes() -> set[str]:
+    universe = _load_universe_cache() or _get_hardcoded_universe()
+    return {
+        str(item.get("code", "")).strip()
+        for item in universe
+        if isinstance(item, dict) and str(item.get("code", "")).strip()
+    }
+
+
 def load_backtest_histories(max_stocks: int = 0) -> Dict[str, Dict[str, Any]]:
     """Load local K-line cache into a backtest-friendly structure."""
     metadata = _load_stock_metadata()
+    allowed_codes = _load_backtest_universe_codes()
     histories: Dict[str, Dict[str, Any]] = {}
 
     for path in sorted(KLINE_CACHE_DIR.glob("*.json")):
@@ -92,6 +104,8 @@ def load_backtest_histories(max_stocks: int = 0) -> Dict[str, Dict[str, Any]]:
             continue
 
         code = path.stem
+        if allowed_codes and code not in allowed_codes:
+            continue
         meta = metadata.get(code, {"name": code, "sector": ""})
         histories[code] = {
             "code": code,
@@ -316,6 +330,8 @@ def _select_with_constraints(
     previous_selected_codes: Sequence[str],
     keep_rank: int,
     max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+    keep_score_gap: float = DEFAULT_KEEP_SCORE_GAP,
+    max_replacements: int = DEFAULT_MAX_REPLACEMENTS,
 ) -> List[Dict[str, Any]]:
     if top_n <= 0:
         return []
@@ -329,6 +345,7 @@ def _select_with_constraints(
     selected: List[Dict[str, Any]] = []
     selected_codes = set()
     sector_counts: Dict[str, int] = {}
+    max_replacements = max(0, int(max_replacements))
 
     def _can_add(item: Dict[str, Any]) -> bool:
         sector = str(item.get("sector", "") or "").strip()
@@ -346,17 +363,37 @@ def _select_with_constraints(
 
     if keep_rank > 0 and previous_selected_codes:
         keep_rank = max(int(keep_rank), top_n)
+        score_cutoff = float(ranked[top_n - 1]["score"]) if len(ranked) >= top_n else float(ranked[-1]["score"])
+        hard_keep_rank = max(keep_rank * 2, top_n * 20)
+        hard_keep_score_gap = float(keep_score_gap) * 2.0
         kept_items: List[Dict[str, Any]] = []
+        reserve_items: List[Dict[str, Any]] = []
         kept_codes = set()
         for code in previous_selected_codes:
             item = item_map.get(code)
             rank = rank_map.get(code)
-            if item is None or rank is None or rank > keep_rank or code in kept_codes:
+            if item is None or rank is None or code in kept_codes:
                 continue
-            kept_items.append(item)
-            kept_codes.add(code)
+            score_ok = float(item.get("score", 0.0) or 0.0) >= score_cutoff - float(keep_score_gap)
+            rank_ok = rank <= keep_rank
+            hard_score_ok = float(item.get("score", 0.0) or 0.0) >= score_cutoff - hard_keep_score_gap
+            hard_rank_ok = rank <= hard_keep_rank
+            if rank_ok or score_ok:
+                kept_items.append(item)
+                kept_codes.add(code)
+                continue
+            if hard_rank_ok or hard_score_ok:
+                reserve_items.append(item)
+                kept_codes.add(code)
 
         kept_items.sort(key=lambda item: (item["score"], item["capital_score"], item["technical_score"]), reverse=True)
+        reserve_items.sort(key=lambda item: (item["score"], item["capital_score"], item["technical_score"]), reverse=True)
+
+        min_retained = max(0, min(top_n, len(previous_selected_codes)) - max_replacements)
+        for item in reserve_items:
+            if len(kept_items) >= min_retained:
+                break
+            kept_items.append(item)
         for item in kept_items:
             if len(selected) >= top_n:
                 break
@@ -369,6 +406,10 @@ def _select_with_constraints(
         code = item["code"]
         if code in selected_codes or not _can_add(item):
             continue
+        if code not in previous_selected_codes and max_replacements > 0:
+            current_replacements = sum(1 for picked in selected if picked["code"] not in previous_selected_codes)
+            if current_replacements >= max_replacements and len(previous_selected_codes) > 0:
+                continue
         _add_item(item)
 
     if len(selected) >= top_n:
@@ -530,6 +571,7 @@ def run_backtest_on_histories(
     max_forward_return_pct: float = DEFAULT_MAX_FORWARD_RETURN_PCT,
     score_cache: Optional[Dict[Any, Any]] = None,
     forward_return_cache: Optional[Dict[Any, Any]] = None,
+    eligible_universe_size: int = 0,
 ) -> Dict[str, Any]:
     """Run a close-to-close historical backtest over in-memory histories."""
     groups = _normalize_enabled_groups(enabled_groups)
@@ -626,6 +668,7 @@ def run_backtest_on_histories(
                         "technical_score": float(raw_score.get("technical_score", 0.0)),
                         "fundamental_score": float(raw_score.get("fundamental_score", 0.0)),
                         "sentiment_score": float(raw_score.get("sentiment_score", 0.0)),
+                        "selection_adjustment": float(raw_score.get("selection_adjustment", 0.0)),
                         "weight_totals": dict(raw_score.get("weight_totals", {})),
                         "price": float(raw_score.get("price", 0.0) or 0.0),
                         "ma20": float(raw_score.get("technical_indicators", {}).get("ma20", 0.0) or 0.0),
@@ -649,7 +692,11 @@ def run_backtest_on_histories(
                     "code": score_result["code"],
                     "name": score_result["name"],
                     "sector": score_result.get("sector", ""),
-                    "score": _combine_group_scores(score_result, groups),
+                    "score": round(
+                        _combine_group_scores(score_result, groups)
+                        + float(score_result.get("selection_adjustment", 0.0) or 0.0),
+                        2,
+                    ),
                     "capital_score": float(score_result.get("capital_score", 0.0)),
                     "technical_score": float(score_result.get("technical_score", 0.0)),
                     "entry_date": forward_info["entry_date"],
@@ -775,6 +822,8 @@ def run_backtest_on_histories(
         },
         "summary": {
             "universe_size": len(histories),
+            "eligible_universe_size": max(int(eligible_universe_size), len(histories)),
+            "history_coverage_pct": round((len(histories) / max(int(eligible_universe_size), 1)) * 100.0, 2) if int(eligible_universe_size) > 0 else 100.0,
             "period_count": len(periods),
             "actual_start": periods[0]["signal_date"] if periods else "",
             "actual_end": periods[-1]["signal_date"] if periods else "",
@@ -886,6 +935,8 @@ def write_backtest_report(result: Dict[str, Any]) -> Path:
         "",
         "## Summary",
         f"- Universe size: {summary.get('universe_size', 0)}",
+        f"- Eligible universe size: {summary.get('eligible_universe_size', summary.get('universe_size', 0))}",
+        f"- History coverage: {float(summary.get('history_coverage_pct', 0.0)):.2f}%",
         f"- Evaluated periods: {summary.get('period_count', 0)}",
         f"- Actual signal range: {summary.get('actual_start') or 'N/A'} -> {summary.get('actual_end') or 'N/A'}",
         f"- Skipped outlier samples: {summary.get('skipped_outlier_count', 0)}",
@@ -1026,6 +1077,7 @@ def run_backtest(
 ) -> Dict[str, Any]:
     """Run a backtest from local cache and persist a Markdown report."""
     histories = load_backtest_histories(max_stocks=max_stocks)
+    eligible_universe_size = len(_load_backtest_universe_codes()) or len(histories)
     result = run_backtest_on_histories(
         histories,
         top_n=top_n,
@@ -1046,6 +1098,7 @@ def run_backtest(
         min_breadth_above_ma20=min_breadth_above_ma20,
         low_exposure=low_exposure,
         max_forward_return_pct=max_forward_return_pct,
+        eligible_universe_size=eligible_universe_size,
     )
     result["report_path"] = write_backtest_report(result)
     return result
