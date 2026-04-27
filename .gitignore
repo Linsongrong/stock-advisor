@@ -7,6 +7,4 @@ data/universe_cache.json
 data/fundamental_cache.json
 data/sentiment_cache.json
 
-reports/*.md
-reports/*.png
-reports/backtests/
+reports/

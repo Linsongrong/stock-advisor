@@ -96,6 +96,7 @@
 - 默认会过滤价格低于 `5` 元的股票，尽量避开过于脆弱的低价票；可通过 CLI 关闭或调整。
 - 最终输出列表默认启用行业分散，同一行业最多保留 `2` 只；可通过 CLI 关闭或调整。
 - 默认会根据市场温度自动降仓：如果“站上 MA20 的股票占比”低于 `55%`，则建议把仓位降到 `60%`。
+- 默认会先识别强资金板块，最终只从强资金板块里挑选个股；市场流动性只作为风险提示。
 - 单只股票抓取失败或打分失败不会中断整次运行。
 - 基本面或情绪数据缺失时，会尽量退回到中性行为而不是直接报错退出。
 - 默认启用数据质量闸门：如果股票池规模、预筛覆盖率、抓取完成率或源状态不达标，当天会直接停止出推荐，并写出质量报告。
@@ -136,6 +137,7 @@ python run.py --top 5 --max-per-sector 1
 python run.py --top 5 --min-price 8
 python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0.6
 python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0
+python run.py --top 5 --min-market-liquidity-ratio 1.05 --sector-flow-top 5 --sector-flow-bonus 8
 ```
 
 运行历史回测：
@@ -186,6 +188,8 @@ python -m unittest discover -s tests -v
 - `min-price` 可以过滤过低价的股票，默认价格底线为 `5.5`
 - `min-breadth-ma20` 可以在弱市时触发降仓，例如 `0.55` 表示只有当至少 55% 的样本股票站上 MA20 才维持满仓
 - `low-exposure` 用来定义弱市时保留多少仓位，例如 `0.6` 表示降到六成仓，`0` 表示直接空仓
+- `min-market-liquidity-ratio` 只用于标记市场流动性好坏，不再决定是否启用强板块选股
+- `sector-flow-top` 控制可获得加分的强资金板块数量，`sector-flow-bonus` 控制板块加分上限
 - `--refresh-history` 会在回测前主动刷新本地 K 线缓存，并优先保存更长历史版本
 - `--max-forward-return-pct` 会过滤掉异常大的前瞻收益样本，降低复权口径或极端事件对长期回测的污染
 - `--scan-backtests` 会批量比较不同参数组合，并输出分窗口报告和跨窗口总榜
@@ -299,6 +303,7 @@ Rules:
 - Stocks below `5.5` are filtered by default to avoid fragile low-priced names.
 - The final list applies a sector cap by default: at most `2` picks per sector.
 - The default setup reduces exposure to `60%` when the share of stocks above `MA20` drops below `55%`.
+- The final picks are restricted to the strongest money-flow sectors; market turnover is reported as a risk signal.
 - Failed fetches or scoring errors are skipped instead of aborting the run.
 - Missing fundamental or sentiment data falls back to neutral behavior where possible.
 
@@ -337,6 +342,7 @@ python run.py --top 5 --max-per-sector 1
 python run.py --top 5 --min-price 8
 python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0.6
 python run.py --top 5 --min-breadth-ma20 0.55 --low-exposure 0
+python run.py --top 5 --min-market-liquidity-ratio 1.05 --sector-flow-top 5 --sector-flow-bonus 8
 ```
 
 Run a historical backtest:
@@ -387,6 +393,8 @@ The report includes:
 - `min-price` filters out low-priced stocks, defaulting to `5.5`
 - `min-breadth-ma20` triggers lower exposure in weak markets
 - `low-exposure` defines how much capital remains deployed in weak regimes
+- `min-market-liquidity-ratio` only labels market liquidity strength; strong-sector selection remains active
+- `sector-flow-top` and `sector-flow-bonus` control how many money-flow sectors can receive a ranking bonus and how large that bonus can be
 - `--refresh-history` refreshes local K-line cache before backtesting and prefers the longer history endpoint
 - `--max-forward-return-pct` filters abnormally large forward-return samples that can distort long-horizon backtests
 - `--scan-backtests` runs a parameter scan and writes both per-window tables and a cross-window ranking

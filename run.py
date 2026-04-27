@@ -31,7 +31,14 @@ from backtester import (
     DEFAULT_SLIPPAGE_RATE,
     run_backtest,
 )
-from config import DEFAULT_TOP_N, MIN_KLINE_DAYS, ensure_runtime_directories
+from config import (
+    DEFAULT_MIN_MARKET_LIQUIDITY_RATIO,
+    DEFAULT_SECTOR_FLOW_BONUS,
+    DEFAULT_SECTOR_FLOW_TOP_N,
+    DEFAULT_TOP_N,
+    MIN_KLINE_DAYS,
+    ensure_runtime_directories,
+)
 from paper_trade import record_paper_trade_run, review_paper_trade_runs, write_paper_trade_review
 from trade_plan import evaluate_strategy_health, write_daily_trade_plan, write_strategy_health_report
 from data_fetcher import MarketDataFetcher
@@ -142,6 +149,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Portfolio exposure to use in weak regime; defaults to 0.6, 0 means full cash",
+    )
+    parser.add_argument(
+        "--min-market-liquidity-ratio",
+        type=float,
+        default=DEFAULT_MIN_MARKET_LIQUIDITY_RATIO,
+        help="Enable sector-flow preference when market turnover is above this multiple of recent average",
+    )
+    parser.add_argument(
+        "--sector-flow-top",
+        type=int,
+        default=DEFAULT_SECTOR_FLOW_TOP_N,
+        help="Number of strongest money-flow sectors eligible for ranking bonus",
+    )
+    parser.add_argument(
+        "--sector-flow-bonus",
+        type=float,
+        default=DEFAULT_SECTOR_FLOW_BONUS,
+        help="Maximum ranking bonus applied to stocks in strong money-flow sectors",
     )
     parser.add_argument(
         "--commission-rate",
@@ -349,6 +374,9 @@ def main() -> int:
         min_price_filter=DEFAULT_MIN_PRICE_FILTER if args.min_price is None else max(0.0, float(args.min_price)),
         min_breadth_above_ma20=DEFAULT_MIN_BREADTH_ABOVE_MA20 if args.min_breadth_ma20 is None else max(0.0, float(args.min_breadth_ma20)),
         low_exposure=DEFAULT_LOW_EXPOSURE if args.low_exposure is None else min(1.0, max(0.0, float(args.low_exposure))),
+        min_market_liquidity_ratio=max(0.0, float(args.min_market_liquidity_ratio)),
+        sector_flow_top_n=max(0, int(args.sector_flow_top)),
+        sector_flow_bonus=max(0.0, float(args.sector_flow_bonus)),
     )
     quality = evaluate_screen_quality(universe, market_data, screened_data, top_n=top_n)
     quality_report_path = write_screen_quality_report(quality)
@@ -388,6 +416,33 @@ def main() -> int:
             value=float(screened_data.get("market_breadth", {}).get("above_ma20_ratio", 0.0)) * 100.0
         )
     )
+    market_liquidity = screened_data.get("market_liquidity", {})
+    print(
+        "Market liquidity: {status} (turnover={ratio:.2f}x, rising_amount={positive:.2f}%)".format(
+            status=market_liquidity.get("status", "unknown"),
+            ratio=float(market_liquidity.get("amount_ratio", 0.0) or 0.0),
+            positive=float(market_liquidity.get("positive_amount_ratio", 0.0) or 0.0) * 100.0,
+        )
+    )
+    print(
+        "Sector flow selection: {status} ({count} candidates)".format(
+            status="strong-sector-only" if market_liquidity.get("sector_flow_active") else "inactive",
+            count=int(screened_data.get("sector_flow_candidate_count", 0) or 0),
+        )
+    )
+    top_sectors = screened_data.get("sector_flows", [])[: max(0, int(screened_data.get("sector_flow_top_n", 0) or 0))]
+    if top_sectors:
+        print(
+            "Strong money-flow sectors: {items}".format(
+                items=", ".join(
+                    "{sector}({score:.1f})".format(
+                        sector=item.get("sector", "unknown"),
+                        score=float(item.get("flow_score", 0.0) or 0.0),
+                    )
+                    for item in top_sectors[:5]
+                )
+            )
+        )
     print(f"Data quality gate: {'pass' if quality.get('passed') else 'fail'}")
     print(f"Suggested exposure: {float(screened_data.get('suggested_exposure', 1.0)) * 100.0:.0f}%")
     if screened_data.get("risk_off"):

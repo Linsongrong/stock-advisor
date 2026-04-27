@@ -29,6 +29,15 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _format_amount(value: Any) -> str:
+    amount = _safe_float(value)
+    if amount >= 100_000_000:
+        return f"{amount / 100_000_000:.2f}亿"
+    if amount >= 10_000:
+        return f"{amount / 10_000:.2f}万"
+    return f"{amount:.0f}"
+
+
 def _compute_max_drawdown_pct(returns_pct: List[float]) -> float:
     equity = 1.0
     peak = 1.0
@@ -181,6 +190,9 @@ def write_daily_trade_plan(
     ensure_runtime_directories()
     report_date = str(screened_data.get("report_date") or date.today().isoformat())
     top_stocks = list(screened_data.get("top_stocks", []))[: max(0, int(top_n))]
+    market_liquidity = screened_data.get("market_liquidity", {})
+    sector_flows = list(screened_data.get("sector_flows", []))
+    sector_flow_top_n = max(0, int(screened_data.get("sector_flow_top_n", 0) or 0))
     model_exposure = max(0.0, min(1.0, float(screened_data.get("suggested_exposure", 1.0) or 0.0)))
     deployment_mode = str(health.get("deployment_mode", "paper_only"))
     live_exposure = model_exposure if deployment_mode == "live_candidate" and quality.get("passed") else 0.0
@@ -194,6 +206,14 @@ def write_daily_trade_plan(
         f"- Strategy health: {str(health.get('status', 'unknown')).upper()}",
         f"- Deployment mode: {deployment_mode}",
         f"- Model suggested exposure: {model_exposure * 100.0:.0f}%",
+        "- Market liquidity: {status} ({ratio:.2f}x)".format(
+            status=market_liquidity.get("status", "unknown"),
+            ratio=_safe_float(market_liquidity.get("amount_ratio")),
+        ),
+        "- Sector flow preference: {status}".format(
+            status="STRONG_SECTOR_ONLY" if market_liquidity.get("sector_flow_active") else "INACTIVE",
+        ),
+        f"- Strong-sector candidates: {int(screened_data.get('sector_flow_candidate_count', 0) or 0)}",
         f"- Live exposure cap: {live_exposure * 100.0:.0f}%",
         f"- Planned hold days: {hold_days}",
         "",
@@ -215,6 +235,27 @@ def write_daily_trade_plan(
         lines.append(f"- 数据质量：{item}")
     for item in health.get("reasons", []):
         lines.append(f"- 策略健康：{item}")
+
+    if sector_flows:
+        lines.extend(
+            [
+                "",
+                "## Strong Sectors",
+                "",
+                "| Rank | Sector | Flow Score | Amount | Rising Amount |",
+                "| --- | --- | ---: | ---: | ---: |",
+            ]
+        )
+        for item in sector_flows[: max(1, sector_flow_top_n)]:
+            lines.append(
+                "| {rank} | {sector} | {score:.1f} | {amount} | {positive:.1f}% |".format(
+                    rank=int(item.get("rank", 0) or 0),
+                    sector=item.get("sector", "unknown"),
+                    score=_safe_float(item.get("flow_score")),
+                    amount=_format_amount(item.get("amount")),
+                    positive=_safe_float(item.get("positive_amount_ratio")) * 100.0,
+                )
+            )
 
     lines.extend(
         [

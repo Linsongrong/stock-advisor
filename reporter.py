@@ -160,6 +160,15 @@ def _format_source_usage(source_usage: Dict[str, Dict[str, int]], source_name: s
     )
 
 
+def _format_amount(value: Any) -> str:
+    amount = float(value or 0.0)
+    if amount >= 100_000_000:
+        return f"{amount / 100_000_000:.2f}亿"
+    if amount >= 10_000:
+        return f"{amount / 10_000:.2f}万"
+    return f"{amount:.0f}"
+
+
 def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
     """Generate the markdown report and save charts for the Top 3 picks."""
     ensure_runtime_directories()
@@ -169,6 +178,9 @@ def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
     source_usage = screened_data.get("source_usage", {})
     prefilter = screened_data.get("prefilter", {})
     fundamental_pool = screened_data.get("fundamental_pool", {})
+    market_liquidity = screened_data.get("market_liquidity", {})
+    sector_flows = list(screened_data.get("sector_flows", []))
+    sector_flow_top_n = int(screened_data.get("sector_flow_top_n", 0) or 0)
 
     chart_names: Dict[str, str] = {}
     for rank, stock in enumerate(top_stocks[:MAX_CHART_STOCKS], start=1):
@@ -213,6 +225,18 @@ def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
         "- Market breadth above MA20: {value:.2f}%".format(
             value=float(screened_data.get("market_breadth", {}).get("above_ma20_ratio", 0.0)) * 100.0,
         ),
+        "- Market liquidity: {status} | turnover={ratio:.2f}x | rising amount={positive:.2f}% | threshold={threshold:.2f}x".format(
+            status=market_liquidity.get("status", "unknown"),
+            ratio=float(market_liquidity.get("amount_ratio", 0.0) or 0.0),
+            positive=float(market_liquidity.get("positive_amount_ratio", 0.0) or 0.0) * 100.0,
+            threshold=float(market_liquidity.get("min_liquidity_ratio", 0.0) or 0.0),
+        ),
+        "- Sector flow preference: {status} | top sectors={count} | max bonus={bonus:.2f}".format(
+            status="strong-sector-only" if market_liquidity.get("sector_flow_active") else "inactive",
+            count=sector_flow_top_n,
+            bonus=float(screened_data.get("sector_flow_bonus", 0.0) or 0.0),
+        ),
+        f"- Strong-sector candidates: {screened_data.get('sector_flow_candidate_count', 0)}",
         "- Suggested exposure: {value:.0f}%".format(
             value=float(screened_data.get("suggested_exposure", 1.0)) * 100.0,
         ),
@@ -230,9 +254,33 @@ def generate_report(screened_data: Dict[str, Any], top_n: int) -> Path:
         f"- Source usage: {_format_source_usage(source_usage, 'quote')}",
         f"- Source usage: {_format_source_usage(source_usage, 'kline')}",
         "",
-        f"## Top {top_n}",
-        "",
     ]
+
+    if sector_flows:
+        lines.extend(
+            [
+                "## Strong Money-Flow Sectors",
+                "",
+                "| Rank | Sector | Flow Score | Amount | Rising Amount | Volume Ratio | Avg Change | Stocks |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for item in sector_flows[: max(1, sector_flow_top_n)]:
+            lines.append(
+                "| {rank} | {sector} | {score:.1f} | {amount} | {positive:.1f}% | {volume:.2f}x | {change:+.2f}% | {count} |".format(
+                    rank=int(item.get("rank", 0) or 0),
+                    sector=item.get("sector", "unknown"),
+                    score=float(item.get("flow_score", 0.0) or 0.0),
+                    amount=_format_amount(item.get("amount", 0.0)),
+                    positive=float(item.get("positive_amount_ratio", 0.0) or 0.0) * 100.0,
+                    volume=float(item.get("avg_volume_ratio", 0.0) or 0.0),
+                    change=float(item.get("avg_change_pct", 0.0) or 0.0),
+                    count=int(item.get("stock_count", 0) or 0),
+                )
+            )
+        lines.append("")
+
+    lines.extend([f"## Top {top_n}", ""])
 
     if top_stocks:
         lines.extend(_build_table_rows(top_stocks))
